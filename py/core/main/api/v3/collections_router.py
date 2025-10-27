@@ -252,11 +252,13 @@ class CollectionsRouter(BaseRouterV3):
         ) -> FileResponse:
             """Export collections as a CSV file."""
 
+            # Non-superusers can only export collections they have access to
             if not auth_user.is_superuser:
-                raise R2RException(
-                    "Only a superuser can export data.",
-                    403,
-                )
+                # Add user filter for non-superusers
+                if filters is None:
+                    filters = {}
+                # Filter to only collections the user has access to
+                filters["user_id"] = {"$eq": str(auth_user.id)}
 
             (
                 csv_file_path,

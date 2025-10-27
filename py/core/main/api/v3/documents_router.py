@@ -890,11 +890,12 @@ class DocumentsRouter(BaseRouterV3):
         ) -> FileResponse:
             """Export documents as a downloadable CSV file."""
 
+            # Non-superusers can only export their own documents
             if not auth_user.is_superuser:
-                raise R2RException(
-                    "Only a superuser can export data.",
-                    403,
-                )
+                # Add owner filter for non-superusers
+                if filters is None:
+                    filters = {}
+                filters["owner_id"] = {"$eq": str(auth_user.id)}
 
             (
                 csv_file_path,
@@ -2122,11 +2123,19 @@ class DocumentsRouter(BaseRouterV3):
         ) -> FileResponse:
             """Export documents as a downloadable CSV file."""
 
+            # Verify document ownership for non-superusers
             if not auth_user.is_superuser:
-                raise R2RException(
-                    "Only a superuser can export data.",
-                    403,
+                doc_overview = await self.services.management.documents_overview(
+                    user_ids=[auth_user.id],
+                    document_ids=[UUID(id)],
+                    offset=0,
+                    limit=1,
                 )
+                if not doc_overview["results"]:
+                    raise R2RException(
+                        "Document not found or you don't have access to it.",
+                        403,
+                    )
 
             (
                 csv_file_path,
@@ -2354,11 +2363,19 @@ class DocumentsRouter(BaseRouterV3):
         ) -> FileResponse:
             """Export documents as a downloadable CSV file."""
 
+            # Verify document ownership for non-superusers
             if not auth_user.is_superuser:
-                raise R2RException(
-                    "Only a superuser can export data.",
-                    403,
+                doc_overview = await self.services.management.documents_overview(
+                    user_ids=[auth_user.id],
+                    document_ids=[UUID(id)],
+                    offset=0,
+                    limit=1,
                 )
+                if not doc_overview["results"]:
+                    raise R2RException(
+                        "Document not found or you don't have access to it.",
+                        403,
+                    )
 
             (
                 csv_file_path,
