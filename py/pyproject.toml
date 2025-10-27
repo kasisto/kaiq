@@ -44,6 +44,7 @@ core = [
     "bcrypt >=4.1.3,<5.0.0",
     "beautifulsoup4 >=4.12.3,<5.0.0",
     "boto3 >=1.35.17,<2.0.0",
+    "html-to-markdown >=2.5.0",
     "colorlog >=6.9.0,<7.0.0",
     "docutils >=0.21.2,<0.22.0",
     "epub >=0.5.2,<0.6.0",

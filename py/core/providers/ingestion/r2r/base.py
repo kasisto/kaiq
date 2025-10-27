@@ -83,6 +83,8 @@ class R2RIngestionProvider(IngestionProvider):
             "zerox": parsers.VLMPDFParser,
         },
         DocumentType.XLSX: {"advanced": parsers.XLSXParserAdvanced},
+        DocumentType.HTML: {"html_to_markdown": parsers.HTMLToMarkdownParser},
+        DocumentType.HTM: {"html_to_markdown": parsers.HTMLToMarkdownParser},
     }
 
     IMAGE_TYPES = {
