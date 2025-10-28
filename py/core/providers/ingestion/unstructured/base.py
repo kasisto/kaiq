@@ -93,7 +93,7 @@ class UnstructuredIngestionProvider(IngestionProvider):
         DocumentType.HEIC: [parsers.ImageParser],  # type: ignore
         DocumentType.MP3: [parsers.AudioParser],  # type: ignore
         DocumentType.JSON: [parsers.JSONParser],  # type: ignore
-        DocumentType.HTML: [parsers.HTMLParser],  # type: ignore
+        # HTML removed from fallback - use extra_parsers instead
         DocumentType.XLS: [parsers.XLSParser],  # type: ignore
         DocumentType.XLSX: [parsers.XLSXParser],  # type: ignore
         DocumentType.DOC: [parsers.DOCParser],  # type: ignore
@@ -108,6 +108,8 @@ class UnstructuredIngestionProvider(IngestionProvider):
             "zerox": parsers.VLMPDFParser,  # type: ignore
         },
         DocumentType.XLSX: {"advanced": parsers.XLSXParserAdvanced},  # type: ignore
+        DocumentType.HTML: {"html_to_markdown": parsers.HTMLToMarkdownParser},  # type: ignore
+        DocumentType.HTM: {"html_to_markdown": parsers.HTMLToMarkdownParser},  # type: ignore
     }
 
     IMAGE_TYPES = {
