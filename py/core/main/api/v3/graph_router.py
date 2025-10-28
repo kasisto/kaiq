@@ -395,9 +395,6 @@ class GraphRouter(BaseRouterV3):
             underlying documents are not deleted and are managed through the
             document lifecycle.
             """
-            if not auth_user.is_superuser:
-                raise R2RException("Only superusers can reset a graph", 403)
-
             if (
                 # not auth_user.is_superuser
                 collection_id not in auth_user.collection_ids
@@ -475,14 +472,9 @@ class GraphRouter(BaseRouterV3):
             existing collection. The user must have appropriate permissions to
             modify the collection.
             """
-            if not auth_user.is_superuser:
-                raise R2RException(
-                    "Only superusers can update graph details", 403
-                )
-
             if (
-                not auth_user.is_superuser
-                and id not in auth_user.collection_ids
+                # not auth_user.is_superuser
+                collection_id not in auth_user.collection_ids
             ):
                 raise R2RException(
                     "The currently authenticated user does not have access to the collection associated with the given graph.",
@@ -644,9 +636,12 @@ class GraphRouter(BaseRouterV3):
         ) -> FileResponse:
             """Export documents as a downloadable CSV file."""
 
-            if not auth_user.is_superuser:
+            if (
+                # not auth_user.is_superuser
+                collection_id not in auth_user.collection_ids
+            ):
                 raise R2RException(
-                    "Only a superuser can export data.",
+                    "The currently authenticated user does not have access to the collection associated with the given graph.",
                     403,
                 )
 
@@ -752,11 +747,6 @@ class GraphRouter(BaseRouterV3):
             auth_user=Depends(self.providers.auth.auth_wrapper()),
         ) -> WrappedRelationshipResponse:
             """Creates a new relationship in the graph."""
-            if not auth_user.is_superuser:
-                raise R2RException(
-                    "Only superusers can create relationships.", 403
-                )
-
             if (
                 # not auth_user.is_superuser
                 collection_id not in auth_user.collection_ids
@@ -852,9 +842,12 @@ class GraphRouter(BaseRouterV3):
         ) -> FileResponse:
             """Export documents as a downloadable CSV file."""
 
-            if not auth_user.is_superuser:
+            if (
+                # not auth_user.is_superuser
+                collection_id not in auth_user.collection_ids
+            ):
                 raise R2RException(
-                    "Only a superuser can export data.",
+                    "The currently authenticated user does not have access to the collection associated with the given graph.",
                     403,
                 )
 
@@ -977,10 +970,6 @@ class GraphRouter(BaseRouterV3):
             auth_user=Depends(self.providers.auth.auth_wrapper()),
         ) -> WrappedEntityResponse:
             """Updates an existing entity in the graph."""
-            if not auth_user.is_superuser:
-                raise R2RException(
-                    "Only superusers can update graph entities.", 403
-                )
             if (
                 # not auth_user.is_superuser
                 collection_id not in auth_user.collection_ids
@@ -1051,11 +1040,6 @@ class GraphRouter(BaseRouterV3):
             auth_user=Depends(self.providers.auth.auth_wrapper()),
         ) -> WrappedBooleanResponse:
             """Removes an entity from the graph."""
-            if not auth_user.is_superuser:
-                raise R2RException(
-                    "Only superusers can delete graph details.", 403
-                )
-
             if (
                 # not auth_user.is_superuser
                 collection_id not in auth_user.collection_ids
@@ -1262,11 +1246,6 @@ class GraphRouter(BaseRouterV3):
             auth_user=Depends(self.providers.auth.auth_wrapper()),
         ) -> WrappedRelationshipResponse:
             """Updates an existing relationship in the graph."""
-            if not auth_user.is_superuser:
-                raise R2RException(
-                    "Only superusers can update graph details", 403
-                )
-
             if (
                 # not auth_user.is_superuser
                 collection_id not in auth_user.collection_ids
@@ -1341,14 +1320,9 @@ class GraphRouter(BaseRouterV3):
             auth_user=Depends(self.providers.auth.auth_wrapper()),
         ) -> WrappedBooleanResponse:
             """Removes a relationship from the graph."""
-            if not auth_user.is_superuser:
-                raise R2RException(
-                    "Only superusers can delete a relationship.", 403
-                )
-
             if (
-                not auth_user.is_superuser
-                and collection_id not in auth_user.collection_ids
+                # not auth_user.is_superuser
+                collection_id not in auth_user.collection_ids
             ):
                 raise R2RException(
                     "The currently authenticated user does not have access to the collection associated with the given graph.",
@@ -1443,14 +1417,9 @@ class GraphRouter(BaseRouterV3):
             The created communities will be integrated with any existing automatically detected communities
             in the graph's community structure.
             """
-            if not auth_user.is_superuser:
-                raise R2RException(
-                    "Only superusers can create a community.", 403
-                )
-
             if (
-                not auth_user.is_superuser
-                and collection_id not in auth_user.collection_ids
+                # not auth_user.is_superuser
+                collection_id not in auth_user.collection_ids
             ):
                 raise R2RException(
                     "The currently authenticated user does not have access to the collection associated with the given graph.",
@@ -1665,14 +1634,6 @@ class GraphRouter(BaseRouterV3):
             auth_user=Depends(self.providers.auth.auth_wrapper()),
         ) -> WrappedBooleanResponse:
             if (
-                not auth_user.is_superuser
-                and collection_id not in auth_user.graph_ids
-            ):
-                raise R2RException(
-                    "Only superusers can delete communities", 403
-                )
-
-            if (
                 # not auth_user.is_superuser
                 collection_id not in auth_user.collection_ids
             ):
@@ -1762,9 +1723,12 @@ class GraphRouter(BaseRouterV3):
         ) -> FileResponse:
             """Export documents as a downloadable CSV file."""
 
-            if not auth_user.is_superuser:
+            if (
+                # not auth_user.is_superuser
+                collection_id not in auth_user.collection_ids
+            ):
                 raise R2RException(
-                    "Only a superuser can export data.",
+                    "The currently authenticated user does not have access to the collection associated with the given graph.",
                     403,
                 )
 
@@ -1850,14 +1814,6 @@ class GraphRouter(BaseRouterV3):
             auth_user=Depends(self.providers.auth.auth_wrapper()),
         ) -> WrappedCommunityResponse:
             """Updates an existing community in the graph."""
-            if (
-                not auth_user.is_superuser
-                and collection_id not in auth_user.graph_ids
-            ):
-                raise R2RException(
-                    "Only superusers can update communities.", 403
-                )
-
             if (
                 # not auth_user.is_superuser
                 collection_id not in auth_user.collection_ids
@@ -1960,12 +1916,6 @@ class GraphRouter(BaseRouterV3):
                 raise R2RException("Collection not found.", 404)
 
             # Check user permissions for graph
-            if (
-                not auth_user.is_superuser
-                and collections_overview_response[0].owner_id != auth_user.id  # type: ignore
-            ):
-                raise R2RException("Only superusers can `pull` a graph.", 403)
-
             if (
                 # not auth_user.is_superuser
                 collection_id not in auth_user.collection_ids
