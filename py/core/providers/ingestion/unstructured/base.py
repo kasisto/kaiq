@@ -304,6 +304,21 @@ class UnstructuredIngestionProvider(IngestionProvider):
         parser_overrides = ingestion_config_override.get(
             "parser_overrides", {}
         )
+
+        # Check if extra parsers are configured for this document type
+        extra_parsers_config = ingestion_config.get("extra_parsers", {})
+        doc_type_key = document.document_type.value
+
+        # If extra parser is configured for this document type, use it as parser_override
+        if doc_type_key in extra_parsers_config and extra_parsers_config[doc_type_key]:
+            # Get the first parser from the list
+            parser_list = extra_parsers_config[doc_type_key]
+            if isinstance(parser_list, list) and len(parser_list) > 0:
+                parser_overrides[doc_type_key] = parser_list[0]
+                logger.info(
+                    f"Using extra_parser '{parser_list[0]}' for {document.document_type} from config"
+                )
+
         elements = []
 
         # TODO - Cleanup this approach to be less hardcoded
@@ -312,7 +327,9 @@ class UnstructuredIngestionProvider(IngestionProvider):
             logger.info(
                 f"Using parser_override for {document.document_type} with input value {parser_overrides[document.document_type.value]}"
             )
-            if parser_overrides[document.document_type.value] == "zerox":
+            parser_name = parser_overrides[document.document_type.value]
+
+            if parser_name == "zerox":
                 async for element in self.parse_fallback(
                     file_content,
                     ingestion_config=ingestion_config,
@@ -322,7 +339,7 @@ class UnstructuredIngestionProvider(IngestionProvider):
                         f"Using parser_override for {document.document_type}"
                     )
                     elements.append(element)
-            elif parser_overrides[document.document_type.value] == "ocr":
+            elif parser_name == "ocr":
                 async for element in self.parse_fallback(
                     file_content,
                     ingestion_config=ingestion_config,
@@ -331,6 +348,13 @@ class UnstructuredIngestionProvider(IngestionProvider):
                     logger.warning(
                         f"Using OCR parser_override for {document.document_type}"
                     )
+                    elements.append(element)
+            elif parser_name == "html_to_markdown":
+                async for element in self.parse_fallback(
+                    file_content,
+                    ingestion_config=ingestion_config,
+                    parser_name=f"html_to_markdown_{document.document_type.value}",
+                ):
                     elements.append(element)
 
         elif document.document_type in self.R2R_FALLBACK_PARSERS.keys():

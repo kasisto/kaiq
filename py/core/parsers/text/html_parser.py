@@ -56,8 +56,6 @@ class HTMLToMarkdownParser(AsyncParser[str | bytes]):
         try:
             from html_to_markdown import convert, ConversionOptions
 
-            logger.info("Starting HTML ingestion using HTMLToMarkdownParser")
-
             # Convert bytes to string if needed
             if isinstance(data, bytes):
                 html_content = data.decode('utf-8')
@@ -72,14 +70,16 @@ class HTMLToMarkdownParser(AsyncParser[str | bytes]):
             )
 
             markdown = convert(html_content, options)
+            logger.info(f"HTML to Markdown conversion: {len(html_content)} chars → {len(markdown)} chars")
+
             yield markdown
 
-        except ImportError:
-            logger.warning("html-to-markdown not installed, falling back to BeautifulSoup")
+        except ImportError as e:
+            logger.warning(f"html-to-markdown not installed: {e}, falling back to BeautifulSoup")
             soup = BeautifulSoup(data, "html.parser")
             yield soup.get_text()
         except Exception as e:
-            logger.error(f"Error converting HTML to Markdown: {str(e)}")
-            # Fallback to BeautifulSoup on error
+            logger.error(f"Error converting HTML to Markdown: {str(e)}", exc_info=True)
+            logger.warning("Falling back to BeautifulSoup due to error")
             soup = BeautifulSoup(data, "html.parser")
             yield soup.get_text()
