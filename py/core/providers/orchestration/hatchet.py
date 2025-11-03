@@ -31,20 +31,13 @@ class HatchetOrchestrationProvider(OrchestrationProvider):
     def workflow(self, *args, **kwargs) -> Callable:
         return self.orchestrator.workflow(*args, **kwargs)
 
-    def step(self, *args, **kwargs) -> Callable:
-        return self.orchestrator.step(*args, **kwargs)
-
-    def failure(self, *args, **kwargs) -> Callable:
-        return self.orchestrator.on_failure_step(*args, **kwargs)
-
     def get_worker(self, name: str, max_runs: Optional[int] = None) -> Any:
         if not max_runs:
             max_runs = self.config.max_runs
         self.worker = self.orchestrator.worker(name, max_runs)  # type: ignore
         return self.worker
 
-    def concurrency(self, *args, **kwargs) -> Callable:
-        return self.orchestrator.concurrency(*args, **kwargs)
+    # Concurrency is handled at the workflow level using ConcurrencyExpression
 
     async def start_worker(self):
         if not self.worker:
@@ -52,7 +45,11 @@ class HatchetOrchestrationProvider(OrchestrationProvider):
                 "Worker not initialized. Call get_worker() first."
             )
 
-        asyncio.create_task(self.worker.async_start())
+        # Run worker in a separate thread to avoid event loop conflicts
+        # The worker's start() method needs its own event loop
+        import threading
+        worker_thread = threading.Thread(target=self.worker.start, daemon=True)
+        worker_thread.start()
 
     async def run_workflow(
         self,
@@ -62,13 +59,20 @@ class HatchetOrchestrationProvider(OrchestrationProvider):
         *args,
         **kwargs,
     ) -> Any:
-        task_id = self.orchestrator.admin.run_workflow(  # type: ignore
+        # The parameters are already wrapped by the API routers
+        # Pass them directly to the admin.run_workflow method
+        workflow_run = self.orchestrator.admin.run_workflow(  # type: ignore
             workflow_name,
-            parameters,
+            parameters,  # Parameters already include {"request": ...} wrapping from callers
             options=options,  # type: ignore
             *args,
             **kwargs,
         )
+
+        # Extract workflow_run_id from the response
+        # The response is a WorkflowRunRef object
+        task_id = workflow_run.workflow_run_id if hasattr(workflow_run, 'workflow_run_id') else str(workflow_run)
+
         return {
             "task_id": str(task_id),
             "message": self.messages.get(
@@ -89,17 +93,17 @@ class HatchetOrchestrationProvider(OrchestrationProvider):
                 hatchet_ingestion_factory,
             )
 
-            workflows = hatchet_ingestion_factory(self, service)
+            workflows = hatchet_ingestion_factory(self.orchestrator, service, self.config)
             if self.worker:
-                for workflow in workflows.values():
-                    self.worker.register_workflow(workflow)
+                for wf in workflows:
+                    self.worker.register_workflow(wf)
 
         elif workflow == Workflow.GRAPH:
             from core.main.orchestration.hatchet.graph_workflow import (  # type: ignore
                 hatchet_graph_search_results_factory,
             )
 
-            workflows = hatchet_graph_search_results_factory(self, service)
+            workflows = hatchet_graph_search_results_factory(self.orchestrator, service, self.config)
             if self.worker:
-                for workflow in workflows.values():
-                    self.worker.register_workflow(workflow)
+                for wf in workflows:
+                    self.worker.register_workflow(wf)

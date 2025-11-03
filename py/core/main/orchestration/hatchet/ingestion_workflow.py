@@ -1,18 +1,25 @@
 # type: ignore
+"""
+Hatchet workflows for document ingestion.
+"""
 import asyncio
+import json
 import logging
 import uuid
-from typing import TYPE_CHECKING
+from datetime import timedelta
+from typing import TYPE_CHECKING, Any, Optional
 from uuid import UUID
 
+from pydantic import BaseModel, Field
+from hatchet_sdk import Context, ConcurrencyExpression, ConcurrencyLimitStrategy
 from fastapi import HTTPException
-from hatchet_sdk import ConcurrencyLimitStrategy, Context
 from litellm import AuthenticationError
 
 from core.base import (
     DocumentChunk,
     GraphConstructionStatus,
     IngestionStatus,
+    OrchestrationConfig,
     OrchestrationProvider,
     generate_extraction_id,
 )
@@ -31,412 +38,233 @@ if TYPE_CHECKING:
 logger = logging.getLogger()
 
 
-def hatchet_ingestion_factory(
-    orchestration_provider: OrchestrationProvider, service: IngestionService
-) -> dict[str, "Hatchet.Workflow"]:
-    @orchestration_provider.workflow(
-        name="ingest-files",
-        timeout="60m",
-    )
-    class HatchetIngestFilesWorkflow:
-        def __init__(self, ingestion_service: IngestionService):
-            self.ingestion_service = ingestion_service
+# ============================================================================
+# Pydantic Input Models
+# ============================================================================
 
-        @orchestration_provider.concurrency(  # type: ignore
-            max_runs=orchestration_provider.config.ingestion_concurrency_limit,  # type: ignore
+class UserInput(BaseModel):
+    """User model for workflow inputs"""
+    id: str
+    email: Optional[str] = None
+    # Add other user fields as needed
+
+class IngestFileInput(BaseModel):
+    """Input model for ingest-files workflow"""
+    document_id: Optional[UUID] = None
+    user: dict  # Will be parsed to User internally
+    file_data: dict
+    metadata: Optional[dict] = {}
+    ingestion_config: Optional[dict] = {}
+    collection_ids: Optional[list[str]] = []
+    version: Optional[str] = None
+    size_in_bytes: int
+
+class IngestChunksInput(BaseModel):
+    """Input model for ingest-chunks workflow"""
+    document_id: UUID
+    user: dict  # Will be parsed to User internally
+    chunks: list[dict]
+    metadata: Optional[dict] = {}
+    collection_ids: Optional[list[str]] = []
+    id: Optional[str] = None
+
+class UpdateChunkInput(BaseModel):
+    """Input model for update-chunk workflow"""
+    document_id: UUID
+    id: UUID  # chunk ID
+    user: dict  # Will be parsed to User internally
+    text: Optional[str] = None
+    metadata: Optional[dict] = {}
+    collection_ids: Optional[list[str]] = []
+
+class VectorIndexCreateInput(BaseModel):
+    """Input model for create-vector-index workflow"""
+    table_name: str
+    index_method: str
+    index_measure: str
+    index_name: str
+    index_column: str
+    index_arguments: dict
+    concurrently: bool = True
+
+class VectorIndexDeleteInput(BaseModel):
+    """Input model for delete-vector-index workflow"""
+    index_name: str
+    table_name: Optional[str] = None
+    concurrently: bool = True
+
+
+# ============================================================================
+# Workflow Factory
+# ============================================================================
+
+def hatchet_ingestion_factory(
+    hatchet: "Hatchet",
+    service: IngestionService,
+    config: OrchestrationConfig
+) -> list:
+    """
+    Create ingestion workflows.
+
+    Returns a list of workflow objects to register with the worker.
+    """
+    workflows = []
+
+    # ========================================================================
+    # 1. ingest-files workflow (with concurrency control)
+    # ========================================================================
+    ingest_files_wf = hatchet.workflow(
+        name="ingest-files",
+        concurrency=ConcurrencyExpression(
+            expression="input.request.user.id",  # Group by user ID
+            max_runs=config.ingestion_concurrency_limit,
             limit_strategy=ConcurrencyLimitStrategy.GROUP_ROUND_ROBIN,
         )
-        def concurrency(self, context: Context) -> str:
-            # TODO: Possible bug in hatchet, the job can't find context.workflow_input() when rerun
-            try:
-                input_data = context.workflow_input()["request"]
-                parsed_data = IngestionServiceAdapter.parse_ingest_file_input(
-                    input_data
-                )
-                return str(parsed_data["user"].id)
-            except Exception:
-                return str(uuid.uuid4())
-
-        @orchestration_provider.step(retries=0, timeout="60m")
-        async def parse(self, context: Context) -> dict:
-            try:
-                logger.info("Initiating ingestion workflow, step: parse")
-                input_data = context.workflow_input()["request"]
-                parsed_data = IngestionServiceAdapter.parse_ingest_file_input(
-                    input_data
-                )
-
-                # ingestion_result = (
-                #     await self.ingestion_service.ingest_file_ingress(
-                #         **parsed_data
-                #     )
-                # )
-
-                # document_info = ingestion_result["info"]
-                document_info = (
-                    self.ingestion_service.create_document_info_from_file(
-                        parsed_data["document_id"],
-                        parsed_data["user"],
-                        parsed_data["file_data"]["filename"],
-                        parsed_data["metadata"],
-                        parsed_data["version"],
-                        parsed_data["size_in_bytes"],
-                    )
-                )
-
-                await self.ingestion_service.update_document_status(
-                    document_info,
-                    status=IngestionStatus.PARSING,
-                )
-
-                ingestion_config = parsed_data["ingestion_config"] or {}
-                extractions_generator = self.ingestion_service.parse_file(
-                    document_info, ingestion_config
-                )
-
-                extractions = []
-                async for extraction in extractions_generator:
-                    extractions.append(extraction)
-
-                # 2) Sum tokens
-                total_tokens = 0
-                for chunk in extractions:
-                    text_data = chunk.data
-                    if not isinstance(text_data, str):
-                        text_data = text_data.decode("utf-8", errors="ignore")
-                    total_tokens += num_tokens(text_data)
-                document_info.total_tokens = total_tokens
-
-                if not ingestion_config.get("skip_document_summary", False):
-                    await service.update_document_status(
-                        document_info, status=IngestionStatus.AUGMENTING
-                    )
-                    await service.augment_document_info(
-                        document_info,
-                        [extraction.to_dict() for extraction in extractions],
-                    )
-
-                await self.ingestion_service.update_document_status(
-                    document_info,
-                    status=IngestionStatus.EMBEDDING,
-                )
-
-                # extractions = context.step_output("parse")["extractions"]
-
-                embedding_generator = self.ingestion_service.embed_document(
-                    [extraction.to_dict() for extraction in extractions]
-                )
-
-                embeddings = []
-                async for embedding in embedding_generator:
-                    embeddings.append(embedding)
-
-                await self.ingestion_service.update_document_status(
-                    document_info,
-                    status=IngestionStatus.STORING,
-                )
-
-                storage_generator = self.ingestion_service.store_embeddings(  # type: ignore
-                    embeddings
-                )
-
-                async for _ in storage_generator:
-                    pass
-
-                await self.ingestion_service.finalize_ingestion(document_info)
-
-                await self.ingestion_service.update_document_status(
-                    document_info,
-                    status=IngestionStatus.SUCCESS,
-                )
-
-                collection_ids = context.workflow_input()["request"].get(
-                    "collection_ids"
-                )
-                if not collection_ids:
-                    # TODO: Move logic onto the `management service`
-                    collection_id = generate_default_user_collection_id(
-                        document_info.owner_id
-                    )
-                    await service.providers.database.collections_handler.assign_document_to_collection_relational(
-                        document_id=document_info.id,
-                        collection_id=collection_id,
-                    )
-                    await service.providers.database.chunks_handler.assign_document_chunks_to_collection(
-                        document_id=document_info.id,
-                        collection_id=collection_id,
-                    )
-                    await service.providers.database.documents_handler.set_workflow_status(
-                        id=collection_id,
-                        status_type="graph_sync_status",
-                        status=GraphConstructionStatus.OUTDATED,
-                    )
-                    await service.providers.database.documents_handler.set_workflow_status(
-                        id=collection_id,
-                        status_type="graph_cluster_status",  # NOTE - we should actually check that cluster has been made first, if not it should be PENDING still
-                        status=GraphConstructionStatus.OUTDATED,
-                    )
-                else:
-                    for collection_id_str in collection_ids:
-                        collection_id = UUID(collection_id_str)
-                        try:
-                            name = document_info.title or "N/A"
-                            description = ""
-                            await service.providers.database.collections_handler.create_collection(
-                                owner_id=document_info.owner_id,
-                                name=name,
-                                description=description,
-                                collection_id=collection_id,
-                            )
-                            await (
-                                self.providers.database.graphs_handler.create(
-                                    collection_id=collection_id,
-                                    name=name,
-                                    description=description,
-                                    graph_id=collection_id,
-                                )
-                            )
-
-                        except Exception as e:
-                            logger.warning(
-                                f"Warning, could not create collection with error: {str(e)}"
-                            )
-
-                        await service.providers.database.collections_handler.assign_document_to_collection_relational(
-                            document_id=document_info.id,
-                            collection_id=collection_id,
-                        )
-                        await service.providers.database.chunks_handler.assign_document_chunks_to_collection(
-                            document_id=document_info.id,
-                            collection_id=collection_id,
-                        )
-                        await service.providers.database.documents_handler.set_workflow_status(
-                            id=collection_id,
-                            status_type="graph_sync_status",
-                            status=GraphConstructionStatus.OUTDATED,
-                        )
-                        await service.providers.database.documents_handler.set_workflow_status(
-                            id=collection_id,
-                            status_type="graph_cluster_status",  # NOTE - we should actually check that cluster has been made first, if not it should be PENDING still
-                            status=GraphConstructionStatus.OUTDATED,
-                        )
-
-                # get server chunk enrichment settings and override parts of it if provided in the ingestion config
-                if server_chunk_enrichment_settings := getattr(
-                    service.providers.ingestion.config,
-                    "chunk_enrichment_settings",
-                    None,
-                ):
-                    chunk_enrichment_settings = update_settings_from_dict(
-                        server_chunk_enrichment_settings,
-                        ingestion_config.get("chunk_enrichment_settings", {})
-                        or {},
-                    )
-
-                if chunk_enrichment_settings.enable_chunk_enrichment:
-                    logger.info("Enriching document with contextual chunks")
-
-                    document_info: DocumentResponse = (
-                        await self.ingestion_service.providers.database.documents_handler.get_documents_overview(
-                            offset=0,
-                            limit=1,
-                            filter_user_ids=[document_info.owner_id],
-                            filter_document_ids=[document_info.id],
-                        )
-                    )["results"][0]
-
-                    await self.ingestion_service.update_document_status(
-                        document_info,
-                        status=IngestionStatus.ENRICHING,
-                    )
-
-                    await self.ingestion_service.chunk_enrichment(
-                        document_id=document_info.id,
-                        document_summary=document_info.summary,
-                        chunk_enrichment_settings=chunk_enrichment_settings,
-                    )
-
-                    await self.ingestion_service.update_document_status(
-                        document_info,
-                        status=IngestionStatus.SUCCESS,
-                    )
-                # ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------
-
-                if service.providers.ingestion.config.automatic_extraction:
-                    extract_input = {
-                        "document_id": str(document_info.id),
-                        "graph_creation_settings": self.ingestion_service.providers.database.config.graph_creation_settings.model_dump_json(),
-                        "user": input_data["user"],
-                    }
-
-                    extract_result = (
-                        await context.aio.spawn_workflow(
-                            "graph-extraction",
-                            {"request": extract_input},
-                        )
-                    ).result()
-
-                    await asyncio.gather(extract_result)
-
-                return {
-                    "status": "Successfully finalized ingestion",
-                    "document_info": document_info.to_dict(),
-                }
-
-            except AuthenticationError:
-                raise R2RException(
-                    status_code=401,
-                    message="Authentication error: Invalid API key or credentials.",
-                ) from None
-            except Exception as e:
-                raise HTTPException(
-                    status_code=500,
-                    detail=f"Error during ingestion: {str(e)}",
-                ) from e
-
-        @orchestration_provider.failure()
-        async def on_failure(self, context: Context) -> None:
-            request = context.workflow_input().get("request", {})
-            document_id = request.get("document_id")
-
-            if not document_id:
-                logger.error(
-                    "No document id was found in workflow input to mark a failure."
-                )
-                return
-
-            try:
-                documents_overview = (
-                    await self.ingestion_service.providers.database.documents_handler.get_documents_overview(
-                        offset=0,
-                        limit=1,
-                        filter_document_ids=[document_id],
-                    )
-                )["results"]
-
-                if not documents_overview:
-                    logger.error(
-                        f"Document with id {document_id} not found in database to mark failure."
-                    )
-                    return
-
-                document_info = documents_overview[0]
-
-                # Update the document status to FAILED
-                if document_info.ingestion_status != IngestionStatus.SUCCESS:
-                    await self.ingestion_service.update_document_status(
-                        document_info,
-                        status=IngestionStatus.FAILED,
-                        metadata={"failure": f"{context.step_run_errors()}"},
-                    )
-
-            except Exception as e:
-                logger.error(
-                    f"Failed to update document status for {document_id}: {e}"
-                )
-
-    @orchestration_provider.workflow(
-        name="ingest-chunks",
-        timeout="60m",
     )
-    class HatchetIngestChunksWorkflow:
-        def __init__(self, ingestion_service: IngestionService):
-            self.ingestion_service = ingestion_service
 
-        @orchestration_provider.step(timeout="60m")
-        async def ingest(self, context: Context) -> dict:
-            input_data = context.workflow_input()["request"]
-            parsed_data = IngestionServiceAdapter.parse_ingest_chunks_input(
-                input_data
+    @ingest_files_wf.task(
+        retries=0,
+        execution_timeout=timedelta(minutes=60)
+    )
+    async def parse_file(input: dict, ctx: Context) -> dict:
+        """Main parse task for file ingestion"""
+        try:
+            logger.info("🚀 [PARSE STEP] ========================================")
+            logger.info("🚀 [PARSE STEP] Starting parse step execution")
+            logger.info(f"🚀 [PARSE STEP] Workflow run ID: {ctx.workflow_run_id()}")
+            logger.info("🚀 [PARSE STEP] ========================================")
+
+            # Parse input using existing adapter
+            # Extract request from wrapped input (API passes {"request": workflow_input})
+            workflow_input = input.get("request", input)
+            parsed_data = IngestionServiceAdapter.parse_ingest_file_input(workflow_input)
+
+            logger.info(f"🚀 [PARSE STEP] Document ID: {parsed_data.get('document_id')}")
+            logger.info(f"🚀 [PARSE STEP] Collection IDs: {parsed_data.get('collection_ids')}")
+
+            # Create document info
+            document_info = service.create_document_info_from_file(
+                parsed_data["document_id"],
+                parsed_data["user"],
+                parsed_data["file_data"]["filename"],
+                parsed_data["metadata"],
+                parsed_data["version"],
+                parsed_data["size_in_bytes"],
             )
 
-            document_info = await self.ingestion_service.ingest_chunks_ingress(
-                **parsed_data
+            await service.update_document_status(
+                document_info,
+                status=IngestionStatus.PARSING,
             )
 
-            await self.ingestion_service.update_document_status(
-                document_info, status=IngestionStatus.EMBEDDING
+            # Parse the file
+            ingestion_config = parsed_data["ingestion_config"] or {}
+            extractions_generator = service.parse_file(
+                document_info, ingestion_config
             )
-            document_id = document_info.id
 
-            extractions = [
-                DocumentChunk(
-                    id=generate_extraction_id(document_id, i),
-                    document_id=document_id,
-                    collection_ids=[],
-                    owner_id=document_info.owner_id,
-                    data=chunk.text,
-                    metadata=parsed_data["metadata"],
-                ).to_dict()
-                for i, chunk in enumerate(parsed_data["chunks"])
-            ]
+            extractions = []
+            async for extraction in extractions_generator:
+                extractions.append(extraction)
 
-            # 2) Sum tokens
+            # Sum tokens
             total_tokens = 0
             for chunk in extractions:
-                text_data = chunk["data"]
+                text_data = chunk.data
                 if not isinstance(text_data, str):
                     text_data = text_data.decode("utf-8", errors="ignore")
                 total_tokens += num_tokens(text_data)
             document_info.total_tokens = total_tokens
 
-            return {
-                "status": "Successfully ingested chunks",
-                "extractions": extractions,
-                "document_info": document_info.to_dict(),
-            }
+            # Document summary if not skipped
+            if not ingestion_config.get("skip_document_summary", False):
+                await service.update_document_status(
+                    document_info, status=IngestionStatus.AUGMENTING
+                )
+                await service.augment_document_info(
+                    document_info,
+                    [extraction.to_dict() for extraction in extractions],
+                )
 
-        @orchestration_provider.step(parents=["ingest"], timeout="60m")
-        async def embed(self, context: Context) -> dict:
-            document_info_dict = context.step_output("ingest")["document_info"]
-            document_info = DocumentResponse(**document_info_dict)
-
-            extractions = context.step_output("ingest")["extractions"]
-
-            embedding_generator = self.ingestion_service.embed_document(
-                extractions
-            )
-            embeddings = [
-                embedding.model_dump()
-                async for embedding in embedding_generator
-            ]
-
-            await self.ingestion_service.update_document_status(
-                document_info, status=IngestionStatus.STORING
+            # Embedding phase
+            await service.update_document_status(
+                document_info,
+                status=IngestionStatus.EMBEDDING,
             )
 
-            storage_generator = self.ingestion_service.store_embeddings(
-                embeddings
+            embedding_generator = service.embed_document(
+                [extraction.to_dict() for extraction in extractions]
             )
+
+            embeddings = []
+            async for embedding in embedding_generator:
+                embeddings.append(embedding)
+
+            # Storage phase
+            await service.update_document_status(
+                document_info,
+                status=IngestionStatus.STORING,
+            )
+
+            storage_generator = service.store_embeddings(embeddings)
             async for _ in storage_generator:
                 pass
 
-            return {
-                "status": "Successfully embedded and stored chunks",
-                "document_info": document_info.to_dict(),
-            }
+            # Finalize
+            await service.finalize_ingestion(document_info)
 
-        @orchestration_provider.step(parents=["embed"], timeout="60m")
-        async def finalize(self, context: Context) -> dict:
-            document_info_dict = context.step_output("embed")["document_info"]
-            document_info = DocumentResponse(**document_info_dict)
-
-            await self.ingestion_service.finalize_ingestion(document_info)
-
-            await self.ingestion_service.update_document_status(
-                document_info, status=IngestionStatus.SUCCESS
+            await service.update_document_status(
+                document_info,
+                status=IngestionStatus.SUCCESS,
             )
 
-            try:
-                # TODO - Move logic onto the `management service`
-                collection_ids = context.workflow_input()["request"].get(
-                    "collection_ids"
+            # Handle collection assignments
+            collection_ids = parsed_data.get("collection_ids")
+            if not collection_ids:
+                collection_id = generate_default_user_collection_id(
+                    document_info.owner_id
                 )
-                if not collection_ids:
-                    # TODO: Move logic onto the `management service`
-                    collection_id = generate_default_user_collection_id(
-                        document_info.owner_id
-                    )
+                await service.providers.database.collections_handler.assign_document_to_collection_relational(
+                    document_id=document_info.id,
+                    collection_id=collection_id,
+                )
+                await service.providers.database.chunks_handler.assign_document_chunks_to_collection(
+                    document_id=document_info.id,
+                    collection_id=collection_id,
+                )
+                await service.providers.database.documents_handler.set_workflow_status(
+                    id=collection_id,
+                    status_type="graph_sync_status",
+                    status=GraphConstructionStatus.OUTDATED,
+                )
+                await service.providers.database.documents_handler.set_workflow_status(
+                    id=collection_id,
+                    status_type="graph_cluster_status",
+                    status=GraphConstructionStatus.OUTDATED,
+                )
+            else:
+                for collection_id_str in collection_ids:
+                    collection_id = UUID(collection_id_str)
+                    try:
+                        name = document_info.title or "N/A"
+                        description = ""
+                        await service.providers.database.collections_handler.create_collection(
+                            owner_id=document_info.owner_id,
+                            name=name,
+                            description=description,
+                            collection_id=collection_id,
+                        )
+                        await service.providers.database.graphs_handler.create(
+                            collection_id=collection_id,
+                            name=name,
+                            description=description,
+                            graph_id=collection_id,
+                        )
+                    except Exception as e:
+                        logger.warning(
+                            f"Warning, could not create collection with error: {str(e)}"
+                        )
+
                     await service.providers.database.collections_handler.assign_document_to_collection_relational(
                         document_id=document_info.id,
                         collection_id=collection_id,
@@ -452,212 +280,350 @@ def hatchet_ingestion_factory(
                     )
                     await service.providers.database.documents_handler.set_workflow_status(
                         id=collection_id,
-                        status_type="graph_cluster_status",  # NOTE - we should actually check that cluster has been made first, if not it should be PENDING still
+                        status_type="graph_cluster_status",
                         status=GraphConstructionStatus.OUTDATED,
                     )
-                else:
-                    for collection_id_str in collection_ids:
-                        collection_id = UUID(collection_id_str)
-                        try:
-                            name = document_info.title or "N/A"
-                            description = ""
-                            await service.providers.database.collections_handler.create_collection(
-                                owner_id=document_info.owner_id,
-                                name=name,
-                                description=description,
-                                collection_id=collection_id,
-                            )
-                            await (
-                                self.providers.database.graphs_handler.create(
-                                    collection_id=collection_id,
-                                    name=name,
-                                    description=description,
-                                    graph_id=collection_id,
-                                )
-                            )
 
-                        except Exception as e:
-                            logger.warning(
-                                f"Warning, could not create collection with error: {str(e)}"
-                            )
-
-                        await service.providers.database.collections_handler.assign_document_to_collection_relational(
-                            document_id=document_info.id,
-                            collection_id=collection_id,
-                        )
-
-                        await service.providers.database.chunks_handler.assign_document_chunks_to_collection(
-                            document_id=document_info.id,
-                            collection_id=collection_id,
-                        )
-
-                        await service.providers.database.documents_handler.set_workflow_status(
-                            id=collection_id,
-                            status_type="graph_sync_status",
-                            status=GraphConstructionStatus.OUTDATED,
-                        )
-
-                        await service.providers.database.documents_handler.set_workflow_status(
-                            id=collection_id,
-                            status_type="graph_cluster_status",
-                            status=GraphConstructionStatus.OUTDATED,  # NOTE - we should actually check that cluster has been made first, if not it should be PENDING still
-                        )
-            except Exception as e:
-                logger.error(
-                    f"Error during assigning document to collection: {str(e)}"
+            # Handle chunk enrichment if enabled
+            chunk_enrichment_settings = None
+            if server_chunk_enrichment_settings := getattr(
+                service.providers.ingestion.config,
+                "chunk_enrichment_settings",
+                None,
+            ):
+                chunk_enrichment_settings = update_settings_from_dict(
+                    server_chunk_enrichment_settings,
+                    ingestion_config.get("chunk_enrichment_settings", {})
+                    or {},
                 )
+
+            if chunk_enrichment_settings and chunk_enrichment_settings.enable_chunk_enrichment:
+                logger.info("Enriching document with contextual chunks")
+
+                document_info = (
+                    await service.providers.database.documents_handler.get_documents_overview(
+                        offset=0,
+                        limit=1,
+                        filter_user_ids=[document_info.owner_id],
+                        filter_document_ids=[document_info.id],
+                    )
+                )["results"][0]
+
+                await service.update_document_status(
+                    document_info,
+                    status=IngestionStatus.ENRICHING,
+                )
+
+                await service.chunk_enrichment(
+                    document_id=document_info.id,
+                    document_summary=document_info.summary,
+                    chunk_enrichment_settings=chunk_enrichment_settings,
+                )
+
+                await service.update_document_status(
+                    document_info,
+                    status=IngestionStatus.SUCCESS,
+                )
+
+            # Automatic graph extraction if enabled
+            if service.providers.ingestion.config.automatic_extraction:
+                extract_input = {
+                    "document_id": str(document_info.id),
+                    "graph_creation_settings": service.providers.database.config.graph_creation_settings.model_dump_json(),
+                    "user": input["user"],
+                }
+
+                # TODO: Spawn graph-extraction workflow when it's ready
+                # For now, try the workflow name
+                try:
+                    # Note: spawn_workflow might not exist, need to check SDK docs
+                    # This might need to be replaced with hatchet.aio_run()
+                    pass
+                except Exception as e:
+                    logger.warning(f"Could not spawn graph extraction: {e}")
 
             return {
                 "status": "Successfully finalized ingestion",
                 "document_info": document_info.to_dict(),
             }
 
-        @orchestration_provider.failure()
-        async def on_failure(self, context: Context) -> None:
-            request = context.workflow_input().get("request", {})
-            document_id = request.get("document_id")
+        except AuthenticationError:
+            raise R2RException(
+                status_code=401,
+                message="Authentication error: Invalid API key or credentials.",
+            ) from None
+        except Exception as e:
+            raise HTTPException(
+                status_code=500,
+                detail=f"Error during ingestion: {str(e)}",
+            ) from e
 
-            if not document_id:
-                logger.error(
-                    "No document id was found in workflow input to mark a failure."
+    @ingest_files_wf.on_failure_task()
+    async def on_ingest_failure(input: dict, ctx: Context) -> dict:
+        """Handle failure for ingest-files workflow"""
+        # Extract request from wrapped input
+        workflow_input = input.get("request", input)
+        document_id = workflow_input.get("document_id")
+
+        if not document_id:
+            logger.error("No document id found in workflow input to mark failure.")
+            return {"status": "failure_handled"}
+
+        try:
+            documents_overview = (
+                await service.providers.database.documents_handler.get_documents_overview(
+                    offset=0,
+                    limit=1,
+                    filter_document_ids=[document_id],
                 )
-                return
+            )["results"]
 
+            if not documents_overview:
+                logger.error(
+                    f"Document with id {document_id} not found in database to mark failure."
+                )
+                return {"status": "failure_handled"}
+
+            document_info = documents_overview[0]
+
+            if document_info.ingestion_status != IngestionStatus.SUCCESS:
+                # Get error info from context
+                error_info = str(ctx.task_run_errors) if hasattr(ctx, 'task_run_errors') else "Unknown error"
+                await service.update_document_status(
+                    document_info,
+                    status=IngestionStatus.FAILED,
+                    metadata={"failure": error_info},
+                )
+        except Exception as e:
+            logger.error(f"Failed to update document status for {document_id}: {e}")
+
+        return {"status": "failure_handled"}
+
+    workflows.append(ingest_files_wf)
+
+    # ========================================================================
+    # 2. ingest-chunks workflow (multi-step DAG)
+    # ========================================================================
+    ingest_chunks_wf = hatchet.workflow(
+        name="ingest-chunks"
+    )
+
+    # Step 1: Ingest
+    @ingest_chunks_wf.task(execution_timeout=timedelta(minutes=60))
+    async def ingest_chunks(input: dict, ctx: Context) -> dict:
+        """Ingest chunks step"""
+        # Extract request from wrapped input (API passes {"request": workflow_input})
+        workflow_input = input.get("request", input)
+        parsed_data = IngestionServiceAdapter.parse_ingest_chunks_input(workflow_input)
+
+        document_info = await service.ingest_chunks_ingress(**parsed_data)
+
+        await service.update_document_status(
+            document_info, status=IngestionStatus.EMBEDDING
+        )
+
+        document_id = document_info.id
+
+        extractions = [
+            DocumentChunk(
+                id=generate_extraction_id(document_id, i),
+                document_id=document_id,
+                collection_ids=[],
+                owner_id=document_info.owner_id,
+                data=chunk.text,
+                metadata=parsed_data["metadata"],
+            ).to_dict()
+            for i, chunk in enumerate(parsed_data["chunks"])
+        ]
+
+        # Sum tokens
+        total_tokens = 0
+        for chunk in extractions:
+            text_data = chunk["data"]
+            if not isinstance(text_data, str):
+                text_data = text_data.decode("utf-8", errors="ignore")
+            total_tokens += num_tokens(text_data)
+        document_info.total_tokens = total_tokens
+
+        return {
+            "status": "Successfully ingested chunks",
+            "extractions": extractions,
+            "document_info": document_info.to_dict(),
+        }
+
+    # Step 2: Embed (depends on ingest)
+    @ingest_chunks_wf.task(
+        parents=[ingest_chunks],
+        execution_timeout=timedelta(minutes=60)
+    )
+    async def embed_chunks(input: dict, ctx: Context) -> dict:
+        """Embed chunks step"""
+        # Access parent output
+        ingest_output = ctx.task_output(ingest_chunks)
+        document_info_dict = ingest_output["document_info"]
+        document_info = DocumentResponse(**document_info_dict)
+        extractions = ingest_output["extractions"]
+
+        embedding_generator = service.embed_document(extractions)
+        embeddings = [
+            embedding.model_dump()
+            async for embedding in embedding_generator
+        ]
+
+        await service.update_document_status(
+            document_info, status=IngestionStatus.STORING
+        )
+
+        storage_generator = service.store_embeddings(embeddings)
+        async for _ in storage_generator:
+            pass
+
+        return {
+            "status": "Successfully embedded and stored chunks",
+            "document_info": document_info.to_dict(),
+        }
+
+    # Step 3: Finalize (depends on embed)
+    @ingest_chunks_wf.task(
+        parents=[embed_chunks],
+        execution_timeout=timedelta(minutes=60)
+    )
+    async def finalize_chunks(input: dict, ctx: Context) -> dict:
+        """Finalize chunks ingestion"""
+        embed_output = ctx.task_output(embed_chunks)
+        document_info_dict = embed_output["document_info"]
+        document_info = DocumentResponse(**document_info_dict)
+
+        await service.finalize_ingestion(document_info)
+        await service.update_document_status(
+            document_info, status=IngestionStatus.SUCCESS
+        )
+
+        # Handle collection assignments
+        workflow_input = input.get("request", input)
+        parsed_data = IngestionServiceAdapter.parse_ingest_chunks_input(workflow_input)
+        collection_ids = parsed_data.get("collection_ids", [])
+
+        if collection_ids:
+            for collection_id_str in collection_ids:
+                collection_id = UUID(collection_id_str)
+                await service.providers.database.collections_handler.assign_document_to_collection_relational(
+                    document_id=document_info.id,
+                    collection_id=collection_id,
+                )
+
+        return {
+            "status": "Successfully finalized chunk ingestion",
+            "document_info": document_info.to_dict(),
+            "task_id": ctx.workflow_run_id(),
+        }
+
+    @ingest_chunks_wf.on_failure_task()
+    async def on_chunks_failure(input: dict, ctx: Context) -> dict:
+        """Handle failure for ingest-chunks workflow"""
+        # Extract request from wrapped input
+        workflow_input = input.get("request", input)
+        document_id = workflow_input.get("document_id")
+        if document_id:
             try:
                 documents_overview = (
-                    await self.ingestion_service.providers.database.documents_handler.get_documents_overview(  # FIXME: This was using the pagination defaults from before... We need to review if this is as intended.
+                    await service.providers.database.documents_handlers.get_documents_overview(
                         offset=0,
-                        limit=100,
+                        limit=1,
                         filter_document_ids=[document_id],
                     )
                 )["results"]
 
-                if not documents_overview:
-                    logger.error(
-                        f"Document with id {document_id} not found in database to mark failure."
-                    )
-                    return
-
-                document_info = documents_overview[0]
-
-                if document_info.ingestion_status != IngestionStatus.SUCCESS:
-                    await self.ingestion_service.update_document_status(
-                        document_info, status=IngestionStatus.FAILED
-                    )
-
+                if documents_overview:
+                    document_info = documents_overview[0]
+                    if document_info.ingestion_status != IngestionStatus.SUCCESS:
+                        await service.update_document_status(
+                            document_info, status=IngestionStatus.FAILED
+                        )
             except Exception as e:
-                logger.error(
-                    f"Failed to update document status for {document_id}: {e}"
-                )
+                logger.error(f"Failed to update document status: {e}")
 
-    @orchestration_provider.workflow(
-        name="update-chunk",
-        timeout="60m",
+        return {"status": "failure_handled"}
+
+    workflows.append(ingest_chunks_wf)
+
+    # ========================================================================
+    # 3. update-chunk workflow (simple single-step)
+    # ========================================================================
+    update_chunk_wf = hatchet.workflow(
+        name="update-chunk"
     )
-    class HatchetUpdateChunkWorkflow:
-        def __init__(self, ingestion_service: IngestionService):
-            self.ingestion_service = ingestion_service
 
-        @orchestration_provider.step(timeout="60m")
-        async def update_chunk(self, context: Context) -> dict:
-            try:
-                input_data = context.workflow_input()["request"]
-                parsed_data = IngestionServiceAdapter.parse_update_chunk_input(
-                    input_data
-                )
+    @update_chunk_wf.task(execution_timeout=timedelta(minutes=60))
+    async def update_chunk(input: dict, ctx: Context) -> dict:
+        """Update a single chunk"""
+        workflow_input = input.get("request", input)
+        parsed_data = IngestionServiceAdapter.parse_update_chunk_input(workflow_input)
 
-                document_uuid = (
-                    UUID(parsed_data["document_id"])
-                    if isinstance(parsed_data["document_id"], str)
-                    else parsed_data["document_id"]
-                )
-                extraction_uuid = (
-                    UUID(parsed_data["id"])
-                    if isinstance(parsed_data["id"], str)
-                    else parsed_data["id"]
-                )
+        document_uuid = parsed_data["document_id"]
+        extraction_uuid = parsed_data["id"]
 
-                await self.ingestion_service.update_chunk_ingress(
-                    document_id=document_uuid,
-                    chunk_id=extraction_uuid,
-                    text=parsed_data.get("text"),
-                    user=parsed_data["user"],
-                    metadata=parsed_data.get("metadata"),
-                    collection_ids=parsed_data.get("collection_ids"),
-                )
+        await service.update_chunk_ingress(
+            document_id=document_uuid,
+            chunk_id=extraction_uuid,
+            text=parsed_data.get("text"),
+            user=parsed_data["user"],
+            metadata=parsed_data.get("metadata"),
+            collection_ids=parsed_data.get("collection_ids"),
+        )
 
-                return {
-                    "message": "Chunk update completed successfully.",
-                    "task_id": context.workflow_run_id(),
-                    "document_ids": [str(document_uuid)],
-                }
+        return {
+            "message": "Chunk update completed successfully.",
+            "task_id": ctx.workflow_run_id(),
+            "document_ids": [str(document_uuid)],
+        }
 
-            except Exception as e:
-                raise HTTPException(
-                    status_code=500,
-                    detail=f"Error during chunk update: {str(e)}",
-                ) from e
+    @update_chunk_wf.on_failure_task()
+    async def on_update_failure(input: dict, ctx: Context) -> dict:
+        """Handle failure for update-chunk workflow"""
+        logger.error(f"Update chunk failed: {ctx.task_run_errors if hasattr(ctx, 'task_run_errors') else 'Unknown'}")
+        return {"status": "failure_handled"}
 
-        @orchestration_provider.failure()
-        async def on_failure(self, context: Context) -> None:
-            # Handle failure case if necessary
-            pass
+    workflows.append(update_chunk_wf)
 
-    @orchestration_provider.workflow(
-        name="create-vector-index", timeout="360m"
+    # ========================================================================
+    # 4. create-vector-index workflow
+    # ========================================================================
+    create_index_wf = hatchet.workflow(
+        name="create-vector-index"
     )
-    class HatchetCreateVectorIndexWorkflow:
-        def __init__(self, ingestion_service: IngestionService):
-            self.ingestion_service = ingestion_service
 
-        @orchestration_provider.step(timeout="60m")
-        async def create_vector_index(self, context: Context) -> dict:
-            input_data = context.workflow_input()["request"]
-            parsed_data = (
-                IngestionServiceAdapter.parse_create_vector_index_input(
-                    input_data
-                )
-            )
+    @create_index_wf.task(execution_timeout=timedelta(minutes=60))
+    async def create_vector_index(input: dict, ctx: Context) -> dict:
+        """Create a vector index"""
+        workflow_input = input.get("request", input)
+        parsed_data = IngestionServiceAdapter.parse_create_vector_index_input(workflow_input)
 
-            await self.ingestion_service.providers.database.chunks_handler.create_index(
-                **parsed_data
-            )
+        await service.providers.database.chunks_handler.create_index(**parsed_data)
 
-            return {
-                "status": "Vector index creation queued successfully.",
-            }
+        return {
+            "status": "Vector index creation queued successfully.",
+        }
 
-    @orchestration_provider.workflow(name="delete-vector-index", timeout="30m")
-    class HatchetDeleteVectorIndexWorkflow:
-        def __init__(self, ingestion_service: IngestionService):
-            self.ingestion_service = ingestion_service
+    workflows.append(create_index_wf)
 
-        @orchestration_provider.step(timeout="10m")
-        async def delete_vector_index(self, context: Context) -> dict:
-            input_data = context.workflow_input()["request"]
-            parsed_data = (
-                IngestionServiceAdapter.parse_delete_vector_index_input(
-                    input_data
-                )
-            )
+    # ========================================================================
+    # 5. delete-vector-index workflow
+    # ========================================================================
+    delete_index_wf = hatchet.workflow(
+        name="delete-vector-index"
+    )
 
-            await self.ingestion_service.providers.database.chunks_handler.delete_index(
-                **parsed_data
-            )
+    @delete_index_wf.task(execution_timeout=timedelta(minutes=10))
+    async def delete_vector_index(input: dict, ctx: Context) -> dict:
+        """Delete a vector index"""
+        workflow_input = input.get("request", input)
+        parsed_data = IngestionServiceAdapter.parse_delete_vector_index_input(workflow_input)
 
-            return {"status": "Vector index deleted successfully."}
+        await service.providers.database.chunks_handler.delete_index(**parsed_data)
 
-    # Add this to the workflows dictionary in hatchet_ingestion_factory
-    ingest_files_workflow = HatchetIngestFilesWorkflow(service)
-    ingest_chunks_workflow = HatchetIngestChunksWorkflow(service)
-    update_chunks_workflow = HatchetUpdateChunkWorkflow(service)
-    create_vector_index_workflow = HatchetCreateVectorIndexWorkflow(service)
-    delete_vector_index_workflow = HatchetDeleteVectorIndexWorkflow(service)
+        return {"status": "Vector index deleted successfully."}
 
-    return {
-        "ingest_files": ingest_files_workflow,
-        "ingest_chunks": ingest_chunks_workflow,
-        "update_chunk": update_chunks_workflow,
-        "create_vector_index": create_vector_index_workflow,
-        "delete_vector_index": delete_vector_index_workflow,
-    }
+    workflows.append(delete_index_wf)
+
+    return workflows

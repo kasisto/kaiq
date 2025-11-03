@@ -41,15 +41,7 @@ class OrchestrationProvider(Provider):
         pass
 
     @abstractmethod
-    def step(self, *args, **kwargs) -> Any:
-        pass
-
-    @abstractmethod
     def workflow(self, *args, **kwargs) -> Any:
-        pass
-
-    @abstractmethod
-    def failure(self, *args, **kwargs) -> Any:
         pass
 
     @abstractmethod

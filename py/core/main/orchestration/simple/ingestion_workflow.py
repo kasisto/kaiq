@@ -29,8 +29,11 @@ def simple_ingestion_factory(service: IngestionService):
             from core.base import IngestionStatus
             from core.main import IngestionServiceAdapter
 
+            # Extract request from wrapped input (all workflows now receive {"request": workflow_input})
+            workflow_input = input_data.get("request", input_data)
+
             parsed_data = IngestionServiceAdapter.parse_ingest_file_input(
-                input_data
+                workflow_input
             )
 
             document_info = service.create_document_info_from_file(
@@ -245,8 +248,11 @@ def simple_ingestion_factory(service: IngestionService):
             from core.base import IngestionStatus
             from core.main import IngestionServiceAdapter
 
+            # Extract request from wrapped input (all workflows now receive {"request": workflow_input})
+            workflow_input = input_data.get("request", input_data)
+
             parsed_data = IngestionServiceAdapter.parse_ingest_chunks_input(
-                input_data
+                workflow_input
             )
 
             document_info = await service.ingest_chunks_ingress(**parsed_data)
@@ -418,8 +424,11 @@ def simple_ingestion_factory(service: IngestionService):
         from core.main import IngestionServiceAdapter
 
         try:
+            # Extract request from wrapped input (all workflows now receive {"request": workflow_input})
+            workflow_input = input_data.get("request", input_data)
+
             parsed_data = IngestionServiceAdapter.parse_update_chunk_input(
-                input_data
+                workflow_input
             )
             document_uuid = (
                 UUID(parsed_data["document_id"])

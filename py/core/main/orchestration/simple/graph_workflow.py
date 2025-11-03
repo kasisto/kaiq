@@ -69,7 +69,9 @@ def simple_graph_search_results_factory(service: GraphService):
         return input_data
 
     async def graph_extraction(input_data):
-        input_data = get_input_data_dict(input_data)
+        # Extract request from wrapped input (all workflows now receive {"request": workflow_input})
+        workflow_input = input_data.get("request", input_data)
+        input_data = get_input_data_dict(workflow_input)
 
         if input_data.get("document_id"):
             document_ids = [input_data.get("document_id")]
@@ -147,7 +149,9 @@ def simple_graph_search_results_factory(service: GraphService):
                 raise e
 
     async def graph_clustering(input_data):
-        input_data = get_input_data_dict(input_data)
+        # Extract request from wrapped input (all workflows now receive {"request": workflow_input})
+        workflow_input = input_data.get("request", input_data)
+        input_data = get_input_data_dict(workflow_input)
         workflow_status = await service.providers.database.documents_handler.get_workflow_status(
             id=input_data.get("collection_id", None),
             status_type="graph_cluster_status",
@@ -210,7 +214,9 @@ def simple_graph_search_results_factory(service: GraphService):
             raise e
 
     async def graph_deduplication(input_data):
-        input_data = get_input_data_dict(input_data)
+        # Extract request from wrapped input (all workflows now receive {"request": workflow_input})
+        workflow_input = input_data.get("request", input_data)
+        input_data = get_input_data_dict(workflow_input)
         await service.deduplicate_document_entities(
             document_id=input_data.get("document_id", None),
         )

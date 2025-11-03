@@ -1,4 +1,3 @@
-# FIXME: Once the Hatchet workflows are type annotated, remove the type: ignore comments
 from .hatchet.graph_workflow import (  # type: ignore
     hatchet_graph_search_results_factory,
 )
