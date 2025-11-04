@@ -19,9 +19,17 @@ class HatchetOrchestrationProvider(OrchestrationProvider):
             ) from None
         root_logger = logging.getLogger()
 
+        import os
+        # Get Hatchet connection details from environment
+        # host_port is for gRPC (7070), server_url is for HTTP REST API (8080)
+        hatchet_host_port = os.getenv("HATCHET_CLIENT_HOST_PORT", "hatchet-engine:7070")
+        hatchet_server_url = os.getenv("HATCHET_CLIENT_SERVER_URL", "http://hatchet-engine:8080")
+
         self.orchestrator = Hatchet(
             config=ClientConfig(
                 logger=root_logger,
+                host_port=hatchet_host_port,
+                server_url=hatchet_server_url,
             ),
         )
         self.root_logger = root_logger
@@ -60,24 +68,27 @@ class HatchetOrchestrationProvider(OrchestrationProvider):
         **kwargs,
     ) -> Any:
         # The parameters are already wrapped by the API routers
-        # Pass them directly to the admin.run_workflow method
-        workflow_run = self.orchestrator.admin.run_workflow(  # type: ignore
-            workflow_name,
-            parameters,  # Parameters already include {"request": ...} wrapping from callers
-            options=options,  # type: ignore
-            *args,
-            **kwargs,
+        # Use the runs.create method following hatchet-sdk 1.20+ signature:
+        # create(workflow_name: str, input: dict, additional_metadata: dict | None = None, priority: int | None = None)
+        additional_metadata = options.get("additional_metadata") if options else None
+        priority = options.get("priority") if options else None
+
+        workflow_run = self.orchestrator.runs.create(
+            workflow_name=workflow_name,
+            input=parameters,
+            additional_metadata=additional_metadata,
+            priority=priority,
         )
 
-        # Extract workflow_run_id from the response
-        # The response is a WorkflowRunRef object
-        task_id = workflow_run.workflow_run_id if hasattr(workflow_run, 'workflow_run_id') else str(workflow_run)
+        # Extract workflow_run_id from the response (V1WorkflowRun object)
+        # The response has a metadata field with an id field containing the UUID
+        task_id = workflow_run.metadata.id if hasattr(workflow_run, 'metadata') else str(workflow_run.metadata.id if hasattr(workflow_run, 'metadata') else workflow_run)
 
         return {
             "task_id": str(task_id),
             "message": self.messages.get(
                 workflow_name, "Workflow queued successfully."
-            ),  # Return message based on workflow name
+            ),
         }
 
     def register_workflows(

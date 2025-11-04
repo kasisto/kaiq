@@ -116,7 +116,7 @@ def hatchet_ingestion_factory(
     ingest_files_wf = hatchet.workflow(
         name="ingest-files",
         concurrency=ConcurrencyExpression(
-            expression="input.request.user.id",  # Group by user ID
+            expression="input.request.document_id",  # Group by document ID (user is a JSON string, can't access .id)
             max_runs=config.ingestion_concurrency_limit,
             limit_strategy=ConcurrencyLimitStrategy.GROUP_ROUND_ROBIN,
         )
