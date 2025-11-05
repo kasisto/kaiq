@@ -82,10 +82,10 @@ class HatchetOrchestrationProvider(OrchestrationProvider):
 
         # Extract workflow_run_id from the response (V1WorkflowRun object)
         # The response has a metadata field with an id field containing the UUID
-        task_id = workflow_run.metadata.id if hasattr(workflow_run, 'metadata') else str(workflow_run.metadata.id if hasattr(workflow_run, 'metadata') else workflow_run)
+        task_id = str(workflow_run.metadata.id)
 
         return {
-            "task_id": str(task_id),
+            "task_id": task_id,
             "message": self.messages.get(
                 workflow_name, "Workflow queued successfully."
             ),

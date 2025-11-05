@@ -99,6 +99,12 @@ def simple_ingestion_factory(service: IngestionService):
 
             collection_ids = parsed_data.get("collection_ids")
 
+            # Convert collection_ids to UUID objects if they are strings
+            if collection_ids:
+                if isinstance(collection_ids, str):
+                    collection_ids = [collection_ids]
+                collection_ids = [UUID(id_str) if isinstance(id_str, str) else id_str for id_str in collection_ids]
+
             try:
                 if not collection_ids:
                     # TODO: Move logic onto the `management service`
