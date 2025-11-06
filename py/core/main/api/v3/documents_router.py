@@ -542,6 +542,38 @@ class DocumentsRouter(BaseRouterV3):
                 version=workflow_input["version"],
             )
 
+            # KAIG-492: Assign document to collection immediately after creation
+            # so it's visible in UI even if workflow hasn't started yet
+            if collection_ids:
+                for collection_id in collection_ids:
+                    try:
+                        # Create collection if it doesn't exist
+                        await self.providers.database.collections_handler.create_collection(
+                            owner_id=auth_user.id,
+                            name=file_data["filename"] or "N/A",
+                            description="",
+                            collection_id=collection_id,
+                        )
+                        await self.providers.database.graphs_handler.create(
+                            collection_id=collection_id,
+                            name=file_data["filename"] or "N/A",
+                            description="",
+                            graph_id=collection_id,
+                        )
+                    except Exception as e:
+                        # Collection already exists - continue
+                        logger.debug(f"Collection {collection_id} already exists: {e}")
+
+                    # Assign document to collection
+                    try:
+                        await self.providers.database.collections_handler.assign_document_to_collection_relational(
+                            document_id=document_id,
+                            collection_id=collection_id,
+                        )
+                        logger.info(f"Pre-assigned document {document_id} to collection {collection_id} at API level")
+                    except Exception as e:
+                        logger.warning(f"Failed to pre-assign document {document_id} to collection {collection_id}: {e}")
+
             if run_with_orchestration:
                 try:
                     workflow_result: dict[

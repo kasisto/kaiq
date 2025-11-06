@@ -89,6 +89,14 @@ def hatchet_ingestion_factory(
                     status=IngestionStatus.PARSING,
                 )
 
+                # KAIG-492: Document already assigned to collection at API level
+                # (see documents_router.py line 545-575)
+                collection_ids = context.workflow_input()["request"].get(
+                    "collection_ids"
+                )
+                if collection_ids:
+                    logger.info(f"Document {document_info.id} has collections: {collection_ids} (assigned at API level)")
+
                 ingestion_config = parsed_data["ingestion_config"] or {}
                 extractions_generator = self.ingestion_service.parse_file(
                     document_info, ingestion_config
@@ -177,35 +185,19 @@ def hatchet_ingestion_factory(
                         status=GraphConstructionStatus.OUTDATED,
                     )
                 else:
+                    # KAIG-492: Ensure document is assigned, then assign chunks
                     for collection_id_str in collection_ids:
                         collection_id = UUID(collection_id_str)
+                        # Ensure document is in collection (idempotent)
                         try:
-                            name = document_info.title or "N/A"
-                            description = ""
-                            await service.providers.database.collections_handler.create_collection(
-                                owner_id=document_info.owner_id,
-                                name=name,
-                                description=description,
+                            await service.providers.database.collections_handler.assign_document_to_collection_relational(
+                                document_id=document_info.id,
                                 collection_id=collection_id,
                             )
-                            await (
-                                self.providers.database.graphs_handler.create(
-                                    collection_id=collection_id,
-                                    name=name,
-                                    description=description,
-                                    graph_id=collection_id,
-                                )
-                            )
-
                         except Exception as e:
-                            logger.warning(
-                                f"Warning, could not create collection with error: {str(e)}"
-                            )
+                            # Already assigned (409) or other error
+                            logger.debug(f"Doc {document_info.id} collection assignment: {e}")
 
-                        await service.providers.database.collections_handler.assign_document_to_collection_relational(
-                            document_id=document_info.id,
-                            collection_id=collection_id,
-                        )
                         await service.providers.database.chunks_handler.assign_document_chunks_to_collection(
                             document_id=document_info.id,
                             collection_id=collection_id,
@@ -217,9 +209,10 @@ def hatchet_ingestion_factory(
                         )
                         await service.providers.database.documents_handler.set_workflow_status(
                             id=collection_id,
-                            status_type="graph_cluster_status",  # NOTE - we should actually check that cluster has been made first, if not it should be PENDING still
+                            status_type="graph_cluster_status",
                             status=GraphConstructionStatus.OUTDATED,
                         )
+                        logger.info(f"Assigned chunks for document {document_info.id} to collection {collection_id}")
 
                 # get server chunk enrichment settings and override parts of it if provided in the ingestion config
                 if server_chunk_enrichment_settings := getattr(
