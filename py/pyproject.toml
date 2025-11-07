@@ -55,7 +55,7 @@ core = [
     "google-auth-oauthlib >=1.2.1,<2.0.0",
     "google-genai >=0.6.0,<0.7.0",
     "gunicorn >=21.2.0,<22.0.0",
-    "hatchet-sdk ==0.47.0",
+    "hatchet-sdk ==0.47.1",
     "litellm >=1.69.3",
     "markdown >=3.6,<4.0",
     "mistralai>=1.5.2",
