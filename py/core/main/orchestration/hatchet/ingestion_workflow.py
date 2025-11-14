@@ -177,35 +177,11 @@ def hatchet_ingestion_factory(
                         status=GraphConstructionStatus.OUTDATED,
                     )
                 else:
+                    # KAIG-492: Document already assigned at API level, just assign chunks
                     for collection_id_str in collection_ids:
                         collection_id = UUID(collection_id_str)
-                        try:
-                            name = document_info.title or "N/A"
-                            description = ""
-                            await service.providers.database.collections_handler.create_collection(
-                                owner_id=document_info.owner_id,
-                                name=name,
-                                description=description,
-                                collection_id=collection_id,
-                            )
-                            await (
-                                self.providers.database.graphs_handler.create(
-                                    collection_id=collection_id,
-                                    name=name,
-                                    description=description,
-                                    graph_id=collection_id,
-                                )
-                            )
 
-                        except Exception as e:
-                            logger.warning(
-                                f"Warning, could not create collection with error: {str(e)}"
-                            )
-
-                        await service.providers.database.collections_handler.assign_document_to_collection_relational(
-                            document_id=document_info.id,
-                            collection_id=collection_id,
-                        )
+                        # Only assign chunks (document already in collection from API level)
                         await service.providers.database.chunks_handler.assign_document_chunks_to_collection(
                             document_id=document_info.id,
                             collection_id=collection_id,

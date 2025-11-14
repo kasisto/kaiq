@@ -508,6 +508,11 @@ class DocumentsRouter(BaseRouterV3):
                         message="Either a file or content must be provided.",
                     )
 
+            #Ensure collection_ids is in metadata so document is created with it
+            if collection_ids:
+                metadata["collection_ids"] = [str(cid) for cid in collection_ids]
+                logger.info(f"Adding collection_ids to metadata: {metadata['collection_ids']}")
+
             workflow_input = {
                 "file_data": file_data,
                 "document_id": str(document_id),
@@ -541,6 +546,7 @@ class DocumentsRouter(BaseRouterV3):
                 metadata=workflow_input["metadata"],
                 version=workflow_input["version"],
             )
+            logger.info(f"Document {document_id} created with collection_ids in database")
 
             if run_with_orchestration:
                 try:
