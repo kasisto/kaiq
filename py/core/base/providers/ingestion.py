@@ -162,9 +162,9 @@ class IngestionConfig(ProviderConfig):
     def get_default(cls, mode: str, app) -> "IngestionConfig":
         """Return default ingestion configuration for a given mode."""
         if mode == "hi-res":
-            return cls(app=app, parser_overrides={"pdf": "zerox"})
+            return cls(app=app)  # Removed hardcoded zerox to be able to switch parsers
         if mode == "ocr":
-            return cls(app=app, parser_overrides={"pdf": "ocr"})
+            return cls(app=app)  # Removed hardcoded zerox to be able to switch parsers
         if mode == "fast":
             return cls(app=app, skip_document_summary=True)
         else:
