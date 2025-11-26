@@ -64,7 +64,7 @@ class HTMLToMarkdownParser(AsyncParser[str | bytes]):
         self.config = config
 
         # Load CSS heading mappings from config or use defaults
-        enabled = getattr(config, "enable_html_css_heading_mappings", False)
+        enabled = getattr(config, "enable_html_css_heading_mappings", True)
         if enabled:
             self.css_heading_mappings = getattr(
                 config, "html_css_heading_mappings", DEFAULT_CSS_HEADING_MAPPINGS
