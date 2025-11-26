@@ -106,35 +106,29 @@ class OpenAICompletionProvider(CompletionProvider):
         azure_foundry_api_key = os.getenv("AZURE_FOUNDRY_API_KEY")
         azure_foundry_api_endpoint = os.getenv("AZURE_FOUNDRY_API_ENDPOINT")
         if azure_foundry_api_key and azure_foundry_api_endpoint:
-            try:
-                from azure.ai.inference import (
-                    ChatCompletionsClient as AzureChatCompletionsClient,
-                )
-                from azure.ai.inference.aio import (
-                    ChatCompletionsClient as AsyncAzureChatCompletionsClient,
-                )
-                from azure.core.credentials import AzureKeyCredential
+            from azure.ai.inference import (
+                ChatCompletionsClient as AzureChatCompletionsClient,
+            )
+            from azure.ai.inference.aio import (
+                ChatCompletionsClient as AsyncAzureChatCompletionsClient,
+            )
+            from azure.core.credentials import AzureKeyCredential
 
-                self.azure_foundry_client = AzureChatCompletionsClient(
-                    endpoint=azure_foundry_api_endpoint,
-                    credential=AzureKeyCredential(azure_foundry_api_key),
-                    api_version=os.getenv(
-                        "AZURE_FOUNDRY_API_VERSION", "2024-05-01-preview"
-                    ),
-                )
-                self.async_azure_foundry_client = AsyncAzureChatCompletionsClient(
-                    endpoint=azure_foundry_api_endpoint,
-                    credential=AzureKeyCredential(azure_foundry_api_key),
-                    api_version=os.getenv(
-                        "AZURE_FOUNDRY_API_VERSION", "2024-05-01-preview"
-                    ),
-                )
-                logger.debug("Azure Foundry clients initialized successfully")
-            except ImportError:
-                logger.warning(
-                    "Azure packages not installed. Azure Foundry provider will not be available. "
-                    "Install azure-ai-inference and azure-core to enable Azure Foundry support."
-                )
+            self.azure_foundry_client = AzureChatCompletionsClient(
+                endpoint=azure_foundry_api_endpoint,
+                credential=AzureKeyCredential(azure_foundry_api_key),
+                api_version=os.getenv(
+                    "AZURE_FOUNDRY_API_VERSION", "2024-05-01-preview"
+                ),
+            )
+            self.async_azure_foundry_client = AsyncAzureChatCompletionsClient(
+                endpoint=azure_foundry_api_endpoint,
+                credential=AzureKeyCredential(azure_foundry_api_key),
+                api_version=os.getenv(
+                    "AZURE_FOUNDRY_API_VERSION", "2024-05-01-preview"
+                ),
+            )
+            logger.debug("Azure Foundry clients initialized successfully")
 
         if not any(
             [

@@ -2,22 +2,13 @@ import logging
 import os
 from typing import Any, Optional
 
-# Optional Azure imports - only needed if using Azure Foundry provider
-try:
-    from azure.ai.inference import (
-        ChatCompletionsClient as AzureChatCompletionsClient,
-    )
-    from azure.ai.inference.aio import (
-        ChatCompletionsClient as AsyncAzureChatCompletionsClient,
-    )
-    from azure.core.credentials import AzureKeyCredential
-    AZURE_AVAILABLE = True
-except ImportError:
-    # Azure packages not installed - Azure Foundry provider will not be available
-    AzureChatCompletionsClient = None  # type: ignore
-    AsyncAzureChatCompletionsClient = None  # type: ignore
-    AzureKeyCredential = None  # type: ignore
-    AZURE_AVAILABLE = False
+from azure.ai.inference import (
+    ChatCompletionsClient as AzureChatCompletionsClient,
+)
+from azure.ai.inference.aio import (
+    ChatCompletionsClient as AsyncAzureChatCompletionsClient,
+)
+from azure.core.credentials import AzureKeyCredential
 
 from core.base.abstractions import GenerationConfig
 from core.base.providers.llm import CompletionConfig, CompletionProvider
