@@ -64,6 +64,12 @@ class R2RApp:
 
         self.app = FastAPI()
 
+        # Setup OpenTelemetry instrumentation
+        # Controlled by OTEL_ENABLED env var (true in Kubernetes, false in docker-compose)
+        # If enabled and setup fails, service will crash (fail fast)
+        from core.utils.otel_setup import setup_opentelemetry
+        setup_opentelemetry(self.app, "r2r")
+
         @self.app.exception_handler(R2RException)
         async def r2r_exception_handler(request: Request, exc: R2RException):
             return JSONResponse(
