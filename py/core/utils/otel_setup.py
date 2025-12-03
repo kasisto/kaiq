@@ -24,9 +24,73 @@ import logging
 import os
 
 from fastapi import FastAPI, Request
-from opentelemetry import trace
+
+# OpenTelemetry is optional - gracefully degrade when not installed (e.g., in tests)
+try:
+    from opentelemetry import trace
+    OTEL_AVAILABLE = True
+except ImportError:
+    trace = None
+    OTEL_AVAILABLE = False
 
 logger = logging.getLogger(__name__)
+
+
+# NoOp implementations for when OpenTelemetry is not installed
+class NoOpSpan:
+    """A no-op span that does nothing but provides the span interface."""
+
+    def set_attribute(self, key: str, value) -> None:
+        pass
+
+    def is_recording(self) -> bool:
+        return False
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *args):
+        pass
+
+
+class NoOpTracer:
+    """A no-op tracer that returns NoOpSpan instances."""
+
+    def start_as_current_span(self, name: str, **kwargs):
+        return NoOpSpan()
+
+    def start_span(self, name: str, **kwargs):
+        return NoOpSpan()
+
+
+class NoOpMeter:
+    """A no-op meter that returns no-op instruments."""
+
+    def create_counter(self, name: str, **kwargs):
+        return NoOpCounter()
+
+    def create_histogram(self, name: str, **kwargs):
+        return NoOpHistogram()
+
+    def create_up_down_counter(self, name: str, **kwargs):
+        return NoOpCounter()
+
+    def create_observable_gauge(self, name: str, **kwargs):
+        pass
+
+
+class NoOpCounter:
+    """A no-op counter that does nothing."""
+
+    def add(self, amount, attributes=None):
+        pass
+
+
+class NoOpHistogram:
+    """A no-op histogram that does nothing."""
+
+    def record(self, value, attributes=None):
+        pass
 
 
 def setup_opentelemetry(
@@ -44,7 +108,7 @@ def setup_opentelemetry(
         service_name: Service name (e.g., "r2r")
 
     Environment Variables:
-        OTEL_ENABLED: Enable/disable ("true" or "false", default: true)
+        OTEL_ENABLED: Enable/disable ("true" or "false", default: false)
 
     Auto-instrumentation environment variables (handled by opentelemetry-instrument):
         OTEL_SERVICE_NAME: Service name
@@ -56,8 +120,13 @@ def setup_opentelemetry(
         OTEL_TRACES_SAMPLER_ARG: Sampling rate
         ENVIRONMENT: Deployment environment
     """
-    # Check if OpenTelemetry is enabled
-    otel_enabled = os.getenv("OTEL_ENABLED", "true").lower()
+    # Skip if OpenTelemetry is not installed (e.g., in test environment)
+    if not OTEL_AVAILABLE:
+        logger.info(f"OpenTelemetry not installed, skipping setup for {service_name}")
+        return
+
+    # Check if OpenTelemetry is enabled (default: disabled, must be explicitly enabled)
+    otel_enabled = os.getenv("OTEL_ENABLED", "false").lower()
     if otel_enabled == "false":
         logger.info(f"OpenTelemetry disabled for {service_name}")
         return
@@ -121,7 +190,7 @@ def get_tracer(name: str):
         name: Name of the tracer (typically __name__)
 
     Returns:
-        OpenTelemetry tracer instance
+        OpenTelemetry tracer instance, or NoOpTracer if OTEL not installed
 
     Example:
         tracer = get_tracer(__name__)
@@ -130,6 +199,8 @@ def get_tracer(name: str):
             span.set_attribute("custom.attribute", "value")
             # Do work
     """
+    if not OTEL_AVAILABLE:
+        return NoOpTracer()
     return trace.get_tracer(name)
 
 
@@ -141,7 +212,7 @@ def get_meter(name: str):
         name: Name of the meter (typically __name__)
 
     Returns:
-        OpenTelemetry meter instance
+        OpenTelemetry meter instance, or NoOpMeter if OTEL not installed
 
     Example:
         from opentelemetry import metrics
@@ -150,5 +221,7 @@ def get_meter(name: str):
         counter = meter.create_counter("my_counter")
         counter.add(1, {"key": "value"})
     """
+    if not OTEL_AVAILABLE:
+        return NoOpMeter()
     from opentelemetry import metrics
     return metrics.get_meter(name)
