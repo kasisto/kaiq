@@ -92,12 +92,13 @@ core = [
 
 opentelemetry = [
     # OpenTelemetry Instrumentation for Observability
-    "opentelemetry-api==1.28.2",
-    "opentelemetry-sdk==1.28.2",
-    "opentelemetry-distro==0.49b2",
-    "opentelemetry-instrumentation==0.49b2",
-    "opentelemetry-instrumentation-fastapi==0.49b2",
-    "opentelemetry-exporter-otlp-proto-grpc==1.28.2",
+    # Using compatible release specifiers to allow patch updates while preventing breaking changes
+    "opentelemetry-api>=1.28.2,<2.0.0",
+    "opentelemetry-sdk>=1.28.2,<2.0.0",
+    "opentelemetry-distro>=0.49b2,<1.0.0",
+    "opentelemetry-instrumentation>=0.49b2,<1.0.0",
+    "opentelemetry-instrumentation-fastapi>=0.49b2,<1.0.0",
+    "opentelemetry-exporter-otlp-proto-grpc>=1.28.2,<2.0.0",
 ]
 
 azureai = [

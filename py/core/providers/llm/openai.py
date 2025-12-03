@@ -133,7 +133,7 @@ class OpenAICompletionProvider(CompletionProvider):
             except ImportError:
                 logger.warning(
                     "Azure packages not installed. Azure Foundry provider will not be available. "
-                    "Install azure-ai-inference and azure-core to enable Azure Foundry support."
+                    "Install with: pip install r2r[azureai]"
                 )
 
         if not any(

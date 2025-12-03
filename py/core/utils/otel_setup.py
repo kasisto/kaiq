@@ -1,5 +1,5 @@
 """
-OpenTelemetry Multi-Tenant Context Middleware for Kaigentic Services
+OpenTelemetry Multi-Tenant Context Middleware for R2R
 
 This module adds multi-tenant context to OpenTelemetry traces when using auto-instrumentation.
 
@@ -172,9 +172,8 @@ def setup_opentelemetry(
                 span.set_attribute("user_roles", user_roles)
                 span.set_attribute("kaigentic.user_roles", user_roles)
 
-            # Add service-specific attributes
-            span.set_attribute("http.route", request.url.path)
-            span.set_attribute("http.method", request.method)
+            # NOTE: http.route and http.method are already set by FastAPI auto-instrumentation
+            # with proper route templates (e.g., /v3/documents/{id}), so we don't override them
 
         response = await call_next(request)
         return response

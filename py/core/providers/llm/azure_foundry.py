@@ -38,6 +38,11 @@ class AzureFoundryCompletionProvider(CompletionProvider):
         azure_foundry_api_endpoint = os.getenv("AZURE_FOUNDRY_API_ENDPOINT")
 
         if azure_foundry_api_key and azure_foundry_api_endpoint:
+            if not AZURE_AVAILABLE:
+                raise ImportError(
+                    "Azure Foundry credentials are configured but Azure packages are not installed. "
+                    "Install with: pip install r2r[azureai]"
+                )
             self.azure_foundry_client = AzureChatCompletionsClient(
                 endpoint=azure_foundry_api_endpoint,
                 credential=AzureKeyCredential(azure_foundry_api_key),
