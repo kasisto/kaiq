@@ -39,8 +39,6 @@ core = [
     "anthropic >=0.49.0",
     "apscheduler >=3.10.4,<4.0.0",
     "asyncpg >=0.29.0,<0.30.0",
-    "azure-ai-inference >=1.0.0b8,<2.0.0",
-    "azure-ai-ml >=1.24.0,<2.0.0",
     "bcrypt >=4.1.3,<5.0.0",
     "beautifulsoup4 >=4.12.3,<5.0.0",
     "boto3 >=1.35.17,<2.0.0",
@@ -90,6 +88,22 @@ core = [
     "uvicorn >=0.27.0.post1,<0.28.0",
     "vecs >=0.4.0,<0.5.0",
     "xlrd >=2.0.1,<3.0.0",
+]
+
+opentelemetry = [
+    # OpenTelemetry Instrumentation for Observability
+    # Using compatible release specifiers to allow patch updates while preventing breaking changes
+    "opentelemetry-api>=1.28.2,<2.0.0",
+    "opentelemetry-sdk>=1.28.2,<2.0.0",
+    "opentelemetry-distro>=0.49b2,<1.0.0",
+    "opentelemetry-instrumentation>=0.49b2,<1.0.0",
+    "opentelemetry-instrumentation-fastapi>=0.49b2,<1.0.0",
+    "opentelemetry-exporter-otlp-proto-grpc>=1.28.2,<2.0.0",
+]
+
+azureai = [
+    "azure-ai-inference >=1.0.0b8,<2.0.0",
+    "azure-ai-ml >=1.24.0,<2.0.0",
 ]
 
 [dependency-groups]
