@@ -40,5 +40,7 @@ ARG R2R_PORT=8000 R2R_HOST=0.0.0.0
 ENV R2R_PORT=$R2R_PORT R2R_HOST=$R2R_HOST
 EXPOSE $R2R_PORT
 
-# Launch the app
-CMD ["sh", "-c", "uvicorn core.main.app_entry:app --host $R2R_HOST --port $R2R_PORT"]
+# Launch the app with OpenTelemetry auto-instrumentation
+# The opentelemetry-instrument CLI wrapper automatically instruments FastAPI,
+# database clients, HTTP requests, and generates standard HTTP metrics
+CMD ["sh", "-c", "opentelemetry-instrument uvicorn core.main.app_entry:app --host $R2R_HOST --port $R2R_PORT"]

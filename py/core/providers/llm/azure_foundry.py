@@ -2,13 +2,22 @@ import logging
 import os
 from typing import Any, Optional
 
-from azure.ai.inference import (
-    ChatCompletionsClient as AzureChatCompletionsClient,
-)
-from azure.ai.inference.aio import (
-    ChatCompletionsClient as AsyncAzureChatCompletionsClient,
-)
-from azure.core.credentials import AzureKeyCredential
+# Optional Azure imports - only needed if using Azure Foundry provider
+try:
+    from azure.ai.inference import (
+        ChatCompletionsClient as AzureChatCompletionsClient,
+    )
+    from azure.ai.inference.aio import (
+        ChatCompletionsClient as AsyncAzureChatCompletionsClient,
+    )
+    from azure.core.credentials import AzureKeyCredential
+    AZURE_AVAILABLE = True
+except ImportError:
+    # Azure packages not installed - Azure Foundry provider will not be available
+    AzureChatCompletionsClient = None  # type: ignore
+    AsyncAzureChatCompletionsClient = None  # type: ignore
+    AzureKeyCredential = None  # type: ignore
+    AZURE_AVAILABLE = False
 
 from core.base.abstractions import GenerationConfig
 from core.base.providers.llm import CompletionConfig, CompletionProvider
@@ -29,6 +38,11 @@ class AzureFoundryCompletionProvider(CompletionProvider):
         azure_foundry_api_endpoint = os.getenv("AZURE_FOUNDRY_API_ENDPOINT")
 
         if azure_foundry_api_key and azure_foundry_api_endpoint:
+            if not AZURE_AVAILABLE:
+                raise ImportError(
+                    "Azure Foundry credentials are configured but Azure packages are not installed. "
+                    "Install with: pip install r2r[azureai]"
+                )
             self.azure_foundry_client = AzureChatCompletionsClient(
                 endpoint=azure_foundry_api_endpoint,
                 credential=AzureKeyCredential(azure_foundry_api_key),
