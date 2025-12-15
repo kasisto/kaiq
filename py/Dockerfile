@@ -14,12 +14,9 @@ ENV PATH="/root/.cargo/bin:${PATH}"
 RUN mkdir -p /app/py
 WORKDIR /app/py
 COPY pyproject.toml ./
-RUN pip install -e ".[core]" && \
-    pip install gunicorn uvicorn pydantic
-
-# Optionally, if you want gunicorn and uvicorn explicitly installed, you can
-# either list them under [project] in `pyproject.toml` or install them here:
-RUN pip install --no-cache-dir gunicorn uvicorn
+RUN pip install --upgrade uv
+RUN uv pip install --system -e ".[core]" -e ".[opentelemetry]" && \
+    uv pip install --system gunicorn uvicorn pydantic
 
 # Create the final image
 FROM python:3.12-slim
