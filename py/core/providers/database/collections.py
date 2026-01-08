@@ -546,7 +546,7 @@ class PostgresCollectionsHandler(Handler):
         """
         collection_query = f"""
             UPDATE {self._get_table_name("collections")}
-            SET document_count = document_count - $1
+            SET document_count = GREATEST(0, document_count - $1)
             WHERE id = $2
         """
         await self.connection_manager.execute_query(

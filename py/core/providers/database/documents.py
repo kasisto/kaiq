@@ -312,6 +312,18 @@ class PostgresDocumentsHandler(Handler):
                                     db_entry["total_tokens"],
                                 )
 
+                                # Increment document_count for each collection
+                                if db_entry["collection_ids"]:
+                                    update_count_query = f"""
+                                        UPDATE {self._get_table_name("collections")}
+                                        SET document_count = document_count + 1
+                                        WHERE id = ANY($1)
+                                    """
+                                    await conn.execute(
+                                        update_count_query,
+                                        db_entry["collection_ids"],
+                                    )
+
                     break  # Success, exit the retry loop
                 except (
                     asyncpg.exceptions.UniqueViolationError,
