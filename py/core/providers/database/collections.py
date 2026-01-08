@@ -395,27 +395,12 @@ class PostgresCollectionsHandler(Handler):
         )
 
         query = f"""
-            WITH doc_counts AS (
-                SELECT unnest(collection_ids) as collection_id, COUNT(*) as cnt
-                FROM {self.project_name}.documents
-                GROUP BY unnest(collection_ids)
-            )
             SELECT
-                c.id,
-                c.owner_id,
-                c.name,
-                c.description,
-                c.graph_sync_status,
-                c.graph_cluster_status,
-                c.created_at,
-                c.updated_at,
-                c.user_count,
-                COALESCE(dc.cnt, 0) as document_count,
+                c.*,
                 COUNT(*) OVER() as total_entries
             FROM {self.project_name}.collections c
-            LEFT JOIN doc_counts dc ON c.id = dc.collection_id
             {where_clause}
-            ORDER BY c.created_at DESC
+            ORDER BY created_at DESC
             OFFSET ${param_index}
         """
         params.append(offset)
