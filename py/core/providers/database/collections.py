@@ -395,12 +395,27 @@ class PostgresCollectionsHandler(Handler):
         )
 
         query = f"""
+            WITH doc_counts AS (
+                SELECT unnest(collection_ids) as collection_id, COUNT(*) as cnt
+                FROM {self.project_name}.documents
+                GROUP BY unnest(collection_ids)
+            )
             SELECT
-                c.*,
+                c.id,
+                c.owner_id,
+                c.name,
+                c.description,
+                c.graph_sync_status,
+                c.graph_cluster_status,
+                c.created_at,
+                c.updated_at,
+                c.user_count,
+                COALESCE(dc.cnt, 0) as document_count,
                 COUNT(*) OVER() as total_entries
             FROM {self.project_name}.collections c
+            LEFT JOIN doc_counts dc ON c.id = dc.collection_id
             {where_clause}
-            ORDER BY created_at DESC
+            ORDER BY c.created_at DESC
             OFFSET ${param_index}
         """
         params.append(offset)
@@ -546,7 +561,7 @@ class PostgresCollectionsHandler(Handler):
         """
         collection_query = f"""
             UPDATE {self._get_table_name("collections")}
-            SET document_count = document_count - $1
+            SET document_count = GREATEST(0, document_count - $1)
             WHERE id = $2
         """
         await self.connection_manager.execute_query(
