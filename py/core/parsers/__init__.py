@@ -20,6 +20,7 @@ __all__ = [
     "CSVParserAdvanced",
     "EMLParser",
     "EPUBParser",
+    "FAQParser",
     "JSONParser",
     "MSGParser",
     "ORGParser",

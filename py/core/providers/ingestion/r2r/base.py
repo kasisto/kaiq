@@ -76,7 +76,10 @@ class R2RIngestionProvider(IngestionProvider):
     }
 
     EXTRA_PARSERS = {
-        DocumentType.CSV: {"advanced": parsers.CSVParserAdvanced},
+        DocumentType.CSV: {
+            "advanced": parsers.CSVParserAdvanced,
+            "faq": parsers.FAQParser,
+        },
         DocumentType.PDF: {
             "ocr": parsers.OCRPDFParser,
             "unstructured": parsers.PDFParserUnstructured,
@@ -260,11 +263,64 @@ class R2RIngestionProvider(IngestionProvider):
             parser_overrides = ingestion_config_override.get(
                 "parser_overrides", {}
             )
+
+            # Check if extra parsers are configured for this document type
+            extra_parsers_config = ingestion_config_override.get(
+                "extra_parsers", {}
+            )
+            doc_type_key = document.document_type.value
+
+            # If extra parser is configured for this document type, use it as parser_override
+            if (
+                doc_type_key in extra_parsers_config
+                and extra_parsers_config[doc_type_key]
+            ):
+                parser_list = extra_parsers_config[doc_type_key]
+                if isinstance(parser_list, list) and len(parser_list) > 0:
+                    parser_name = parser_list[0]
+                    parser_overrides[doc_type_key] = parser_name
+                    logger.info(
+                        f"Using extra_parser '{parser_name}' for {document.document_type} from config"
+                    )
+
+                    # Lazily initialize the parser if not already initialized
+                    parser_key = f"{parser_name}_{doc_type_key}"
+                    if parser_key not in self.parsers:
+                        if (
+                            document.document_type in self.EXTRA_PARSERS
+                            and parser_name
+                            in self.EXTRA_PARSERS[document.document_type]
+                        ):
+                            self.parsers[parser_key] = self.EXTRA_PARSERS[
+                                document.document_type
+                            ][parser_name](
+                                config=self.config,
+                                database_provider=self.database_provider,
+                                llm_provider=self.llm_provider,
+                                ocr_provider=self.ocr_provider,
+                            )
+                            logger.info(
+                                f"Lazily initialized parser {parser_name} for {document.document_type}"
+                            )
+
             if document.document_type.value in parser_overrides:
+                override_parser_name = parser_overrides[document.document_type.value]
                 logger.info(
-                    f"Using parser_override for {document.document_type} with input value {parser_overrides[document.document_type.value]}"
+                    f"Using parser_override for {document.document_type} with input value {override_parser_name}"
                 )
-                if parser_overrides[DocumentType.PDF.value] == "zerox":
+
+                # Handle FAQ parser for CSV files
+                if override_parser_name == "faq":
+                    parser_key = f"faq_{document.document_type.value}"
+                    logger.info(f"Using FAQ parser with key: {parser_key}")
+                    async for chunk in self.parsers[parser_key].ingest(
+                        file_content, **ingestion_config_override
+                    ):
+                        if isinstance(chunk, dict) and chunk.get("content"):
+                            contents.append(chunk)
+                        elif chunk:
+                            contents.append({"content": chunk})
+                elif override_parser_name == "zerox":
                     # Collect content from VLMPDFParser
                     async for chunk in self.parsers[
                         f"zerox_{DocumentType.PDF.value}"
@@ -275,12 +331,36 @@ class R2RIngestionProvider(IngestionProvider):
                             chunk
                         ):  # Handle string output for backward compatibility
                             contents.append({"content": chunk})
-                elif parser_overrides[DocumentType.PDF.value] == "ocr":
+                elif override_parser_name == "ocr":
                     async for chunk in self.parsers[
                         f"ocr_{DocumentType.PDF.value}"
                     ].ingest(file_content, **ingestion_config_override):
                         if isinstance(chunk, dict) and chunk.get("content"):
                             contents.append(chunk)
+
+                # Handle FAQ parser - yield contents directly without chunking
+                if contents and override_parser_name == "faq":
+                    iteration = 0
+                    for content_item in contents:
+                        chunk_text = content_item["content"]
+                        metadata = {**document.metadata, "chunk_order": iteration}
+
+                        extraction = DocumentChunk(
+                            id=generate_extraction_id(document.id, iteration),
+                            document_id=document.id,
+                            owner_id=document.owner_id,
+                            collection_ids=document.collection_ids,
+                            data=chunk_text,
+                            metadata=metadata,
+                        )
+                        iteration += 1
+                        yield extraction
+
+                    logger.debug(
+                        f"Parsed FAQ document with id={document.id}, "
+                        f"into {iteration} Q&A extractions in t={time.time() - t0:.2f} seconds."
+                    )
+                    return
 
                 if (
                     contents

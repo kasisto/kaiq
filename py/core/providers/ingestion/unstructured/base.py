@@ -101,7 +101,10 @@ class UnstructuredIngestionProvider(IngestionProvider):
     }
 
     EXTRA_PARSERS = {
-        DocumentType.CSV: {"advanced": parsers.CSVParserAdvanced},  # type: ignore
+        DocumentType.CSV: {
+            "advanced": parsers.CSVParserAdvanced,  # type: ignore
+            "faq": parsers.FAQParser,  # type: ignore
+        },
         DocumentType.PDF: {
             "ocr": parsers.OCRPDFParser,  # type: ignore
             "unstructured": parsers.PDFParserUnstructured,  # type: ignore
@@ -247,7 +250,16 @@ class UnstructuredIngestionProvider(IngestionProvider):
         for content_item in contents:
             text = content_item["content"]
 
-            if vlm_ocr_one_page_per_chunk and parser_name.startswith(
+            # FAQ parser: yield each Q&A pair as-is without splitting
+            if parser_name.startswith("faq_"):
+                metadata = {"chunk_id": iteration}
+                yield FallbackElement(
+                    text=text or "No content extracted.",
+                    metadata=metadata,
+                )
+                iteration += 1
+                await asyncio.sleep(0)
+            elif vlm_ocr_one_page_per_chunk and parser_name.startswith(
                 ("zerox_", "ocr_")
             ):
                 # Use one page per chunk for OCR/VLM
@@ -314,10 +326,30 @@ class UnstructuredIngestionProvider(IngestionProvider):
             # Get the first parser from the list
             parser_list = extra_parsers_config[doc_type_key]
             if isinstance(parser_list, list) and len(parser_list) > 0:
-                parser_overrides[doc_type_key] = parser_list[0]
+                parser_name = parser_list[0]
+                parser_overrides[doc_type_key] = parser_name
                 logger.info(
-                    f"Using extra_parser '{parser_list[0]}' for {document.document_type} from config"
+                    f"Using extra_parser '{parser_name}' for {document.document_type} from config"
                 )
+
+                # Lazily initialize the parser if not already initialized
+                parser_key = f"{parser_name}_{doc_type_key}"
+                if parser_key not in self.parsers:
+                    if (
+                        document.document_type in self.EXTRA_PARSERS
+                        and parser_name in self.EXTRA_PARSERS[document.document_type]
+                    ):
+                        self.parsers[parser_key] = self.EXTRA_PARSERS[
+                            document.document_type
+                        ][parser_name](
+                            config=self.config,
+                            database_provider=self.database_provider,
+                            llm_provider=self.llm_provider,
+                            ocr_provider=self.ocr_provider,
+                        )
+                        logger.info(
+                            f"Lazily initialized parser {parser_name} for {document.document_type}"
+                        )
 
         elements = []
 
@@ -355,6 +387,16 @@ class UnstructuredIngestionProvider(IngestionProvider):
                     ingestion_config=ingestion_config,
                     parser_name=f"html_to_markdown_{document.document_type.value}",
                 ):
+                    elements.append(element)
+            elif parser_name == "faq":
+                async for element in self.parse_fallback(
+                    file_content,
+                    ingestion_config=ingestion_config,
+                    parser_name=f"faq_{document.document_type.value}",
+                ):
+                    logger.info(
+                        f"Using FAQ parser for {document.document_type}"
+                    )
                     elements.append(element)
 
         elif document.document_type in self.R2R_FALLBACK_PARSERS.keys():
