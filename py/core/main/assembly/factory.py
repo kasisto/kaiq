@@ -245,6 +245,11 @@ class R2RProviderFactory:
             from core.providers import S3FileProvider
 
             return S3FileProvider(config)
+
+        elif config.provider == "azure":
+            from core.providers import AzureBlobFileProvider
+
+            return AzureBlobFileProvider(config)
         else:
             raise ValueError(f"File provider {config.provider} not supported")
 

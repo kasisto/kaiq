@@ -7,6 +7,7 @@ from core.providers import (
     AnthropicCompletionProvider,
     APSchedulerProvider,
     AsyncSMTPEmailProvider,
+    AzureBlobFileProvider,
     ClerkAuthProvider,
     ConsoleMockEmailProvider,
     HatchetOrchestrationProvider,
@@ -61,7 +62,7 @@ class R2RProviders(BaseModel):
         | OpenAIEmbeddingProvider
         | OllamaEmbeddingProvider
     )
-    file: PostgresFileProvider | S3FileProvider
+    file: PostgresFileProvider | S3FileProvider | AzureBlobFileProvider
     completion_embedding: (
         LiteLLMEmbeddingProvider
         | OpenAIEmbeddingProvider
