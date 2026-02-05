@@ -2,6 +2,7 @@
 from .csv_parser import CSVParser, CSVParserAdvanced
 from .eml_parser import EMLParser
 from .epub_parser import EPUBParser
+from .faq_parser import FAQParser
 from .json_parser import JSONParser
 from .msg_parser import MSGParser
 from .org_parser import ORGParser
@@ -16,6 +17,7 @@ __all__ = [
     "CSVParserAdvanced",
     "EMLParser",
     "EPUBParser",
+    "FAQParser",
     "JSONParser",
     "MSGParser",
     "ORGParser",
