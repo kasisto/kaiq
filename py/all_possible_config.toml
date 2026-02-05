@@ -206,6 +206,11 @@ endpoint_url = ""
 region_name = ""
 aws_access_key_id = ""
 aws_secret_access_key = ""
+# If using Azure Blob Storage
+azure_storage_account_name = ""
+azure_storage_account_key = ""
+azure_storage_connection_string = ""
+azure_container_name = ""
 
 ################################################################################
 # Ingestion Settings (IngestionConfig and nested settings)
