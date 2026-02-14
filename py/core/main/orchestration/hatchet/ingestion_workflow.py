@@ -483,6 +483,24 @@ def hatchet_ingestion_factory(
                     f"Error during assigning document to collection: {str(e)}"
                 )
 
+            # Trigger automatic extraction if enabled (same as ingest-files workflow)
+            if service.providers.ingestion.config.automatic_extraction:
+                input_data = context.workflow_input()["request"]
+                extract_input = {
+                    "document_id": str(document_info.id),
+                    "graph_creation_settings": self.ingestion_service.providers.database.config.graph_creation_settings.model_dump_json(),
+                    "user": input_data["user"],
+                }
+
+                extract_result = (
+                    await context.aio.spawn_workflow(
+                        "graph-extraction",
+                        {"request": extract_input},
+                    )
+                ).result()
+
+                await asyncio.gather(extract_result)
+
             return {
                 "status": "Successfully finalized ingestion",
                 "document_info": document_info.to_dict(),
