@@ -12,23 +12,6 @@ from unstructured.partition.auto import partition
 
 logger = logging.getLogger()
 
-# Pre-warm the iso639 LRU cache before any threads start.
-# The iso639 library uses a single shared SQLite connection that is not
-# thread-safe. By calling Language.match() here (single-threaded at import
-# time), the results get cached in memory via @functools.lru_cache and the
-# SQLite connection is never hit again during concurrent requests.
-try:
-    from iso639 import Language, LanguageNotFoundError
-    for _code in ["no", "en", "de", "fr", "es", "it", "pt", "nl", "sv",
-                   "da", "fi", "pl", "ru", "ja", "ko", "zh-cn", "ar"]:
-        try:
-            Language.match(_code)
-        except LanguageNotFoundError:
-            pass
-    logger.info("iso639 language cache pre-warmed successfully")
-except ImportError:
-    pass  # iso639 not installed, nothing to pre-warm
-
 app = FastAPI()
 
 
