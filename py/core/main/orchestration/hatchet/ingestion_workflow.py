@@ -12,6 +12,7 @@ from litellm import AuthenticationError
 from core.base import (
     DocumentChunk,
     GraphConstructionStatus,
+    GraphExtractionStatus,
     IngestionStatus,
     OrchestrationProvider,
     generate_extraction_id,
@@ -29,6 +30,48 @@ if TYPE_CHECKING:
     from hatchet_sdk import Hatchet
 
 logger = logging.getLogger()
+
+
+def should_skip_graph_extraction(
+    doc_type: str,
+    skip_types: list[str],
+    ingestion_config: dict,
+    document_id: str,
+) -> bool:
+    """
+    Determine if graph extraction should be skipped for a document.
+
+    Args:
+        doc_type: Document type (e.g., 'xlsx', 'pdf')
+        skip_types: List of document types to auto-skip
+        ingestion_config: Ingestion config from frontend
+        document_id: Document ID for logging
+
+    Returns:
+        True if graph extraction should be skipped
+    """
+    skip_graph = False
+    parser_overrides = ingestion_config.get("parser_overrides", {})
+
+    # Auto-skip for raw Excel (but allow semantic Excel)
+    if doc_type in skip_types:
+        parser_for_type = parser_overrides.get(doc_type)
+        if parser_for_type != "semantic":
+            skip_graph = True
+            logger.info(
+                f"Auto-skipping graph extraction for raw {doc_type} "
+                f"(document_id={document_id})"
+            )
+
+    # Manual override from frontend (skip_graph_extraction flag)
+    if ingestion_config.get("skip_graph_extraction", False):
+        skip_graph = True
+        logger.info(
+            f"Skipping graph extraction per user request "
+            f"(document_id={document_id})"
+        )
+
+    return skip_graph
 
 
 def hatchet_ingestion_factory(
@@ -239,20 +282,43 @@ def hatchet_ingestion_factory(
                 # ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------
 
                 if service.providers.ingestion.config.automatic_extraction:
-                    extract_input = {
-                        "document_id": str(document_info.id),
-                        "graph_creation_settings": self.ingestion_service.providers.database.config.graph_creation_settings.model_dump_json(),
-                        "user": input_data["user"],
-                    }
+                    doc_type = document_info.document_type.value
+                    skip_types = (
+                        service.providers.ingestion.config.skip_graph_extraction_for_types
+                    )
+                    skip_graph = should_skip_graph_extraction(
+                        doc_type=doc_type,
+                        skip_types=skip_types,
+                        ingestion_config=ingestion_config,
+                        document_id=str(document_info.id),
+                    )
 
-                    extract_result = (
-                        await context.aio.spawn_workflow(
-                            "graph-extraction",
-                            {"request": extract_input},
+                    if not skip_graph:
+                        extract_input = {
+                            "document_id": str(document_info.id),
+                            "graph_creation_settings": self.ingestion_service.providers.database.config.graph_creation_settings.model_dump_json(),
+                            "user": input_data["user"],
+                        }
+
+                        extract_result = (
+                            await context.aio.spawn_workflow(
+                                "graph-extraction",
+                                {"request": extract_input},
+                            )
+                        ).result()
+
+                        await asyncio.gather(extract_result)
+                    else:
+                        # Mark extraction as complete when skipping
+                        await service.providers.database.documents_handler.set_workflow_status(
+                            id=document_info.id,
+                            status_type="extraction_status",
+                            status=GraphExtractionStatus.SUCCESS,
                         )
-                    ).result()
-
-                    await asyncio.gather(extract_result)
+                        logger.info(
+                            f"Graph extraction skipped for document {document_info.id} "
+                            f"(type={doc_type})"
+                        )
 
                 return {
                     "status": "Successfully finalized ingestion",

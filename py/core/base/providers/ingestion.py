@@ -48,6 +48,8 @@ class IngestionConfig(ProviderConfig):
         "parser_overrides": {},
         "extra_fields": {},
         "automatic_extraction": False,
+        "skip_graph_extraction_for_types": ["xlsx", "xls"],
+        "skip_graph_extraction": False,
     }
 
     provider: str = Field(
@@ -131,6 +133,18 @@ class IngestionConfig(ProviderConfig):
         default_factory=lambda: IngestionConfig._defaults[
             "automatic_extraction"
         ]
+    )
+    skip_graph_extraction_for_types: list[str] = Field(
+        default_factory=lambda: IngestionConfig._defaults[
+            "skip_graph_extraction_for_types"
+        ],
+        description="Document types to auto-skip graph extraction for (unless using semantic parser)",
+    )
+    skip_graph_extraction: bool = Field(
+        default_factory=lambda: IngestionConfig._defaults[
+            "skip_graph_extraction"
+        ],
+        description="Manual override to skip graph extraction for this document",
     )
     document_summary_max_length: int = Field(
         default_factory=lambda: IngestionConfig._defaults[
