@@ -63,28 +63,37 @@ def safe_temp_file(data: bytes, suffix: str):
             except Exception:
                 pass  # Best effort cleanup
 
-# Default prompt for semantic chunk generation
-DEFAULT_SEMANTIC_PROMPT = """Analyze the following spreadsheet content and create a semantic description that:
+# Prompt name for database lookup
+XLSX_SEMANTIC_PROMPT_NAME = "xlsx_semantic"
 
-1. Summarizes what type of data this represents (budgets, metrics, inventory, etc.)
-2. Lists key column headers and their meaning
-3. Notes important values, ranges, patterns, or trends
-4. Identifies time periods, categories, or entities present
-5. Includes searchable keywords and terms for retrieval
+# Fallback prompt if database lookup fails (also serves as documentation)
+# This prompt is loaded from prompts/xlsx_semantic.yaml in production
+DEFAULT_SEMANTIC_PROMPT = """Create a searchable index description for this spreadsheet data.
 
-IMPORTANT: Prefer including actual raw data values over approximations or generalizations.
-For accurate retrieval, include specific numbers, names, dates, and exact values from the data.
-Avoid vague summaries like "various amounts" - instead include actual figures like "$5,000, $12,500".
+This description is ONLY for search matching - the raw data will be provided separately as the authoritative source.
 
-Keep the description information-rich with concrete data points.
-This description will be used for semantic search, so include terms users might search for.
+Include for search matching:
+1. What type of data this is (rates, pricing, inventory, metrics, schedules, etc.)
+2. ALL column headers and field names
+3. ALL entity names, product names, categories, identifiers mentioned
+4. Value RANGES and categories (e.g., "credit scores 620-850", "terms 24-84 months")
+5. Time periods and date ranges covered
+6. Key searchable terms users might query
+
+DO NOT include:
+- Every individual data value (the raw data has those)
+- Lengthy descriptions or analysis
+- Redundant information
+
+Keep it concise - this is an index for finding the data, not a replacement for it.
+The raw spreadsheet data will be the authoritative source for exact values.
 
 Sheet Name: {sheet_name}
 
 Content:
 {content}
 
-Return ONLY the semantic description, no other text."""
+Return ONLY the index description, no other text."""
 
 
 class XLSXSemanticParser(AsyncParser[str | bytes]):
@@ -113,14 +122,38 @@ class XLSXSemanticParser(AsyncParser[str | bytes]):
         # Initialize MarkItDown lazily
         self._md_converter = None
 
-        # Get model from config or use default
-        # The llm_provider has its own config with model settings
-        self.semantic_prompt = DEFAULT_SEMANTIC_PROMPT
+        # Prompt template (loaded from database or fallback to default)
+        # Will be loaded lazily on first use via _get_semantic_prompt()
+        self._semantic_prompt_template: str | None = None
 
         # Max content size to send to LLM (characters)
         self.max_content_for_llm = 15000
 
         logger.info("XLSXSemanticParser initialized")
+
+    async def _get_semantic_prompt(self, sheet_name: str, content: str) -> str:
+        """
+        Get the semantic prompt with inputs filled in.
+
+        Tries to load from database prompts_handler first, falls back to default.
+        The prompt is loaded from prompts/xlsx_semantic.yaml which is stored in DB.
+        """
+        try:
+            # Try to get formatted prompt from database
+            if hasattr(self.database_provider, 'prompts_handler'):
+                prompt = await self.database_provider.prompts_handler.get_cached_prompt(
+                    XLSX_SEMANTIC_PROMPT_NAME,
+                    inputs={"sheet_name": sheet_name, "content": content}
+                )
+                return prompt
+        except Exception as e:
+            logger.warning(
+                f"Failed to load prompt '{XLSX_SEMANTIC_PROMPT_NAME}' from database: {e}. "
+                "Using default prompt."
+            )
+
+        # Fallback to default prompt
+        return DEFAULT_SEMANTIC_PROMPT.format(sheet_name=sheet_name, content=content)
 
     @property
     def md_converter(self):
@@ -311,7 +344,8 @@ class XLSXSemanticParser(AsyncParser[str | bytes]):
             if len(content) > self.max_content_for_llm:
                 truncated_content += "\n... [content truncated]"
 
-            prompt = self.semantic_prompt.format(
+            # Get prompt from database or fallback to default
+            prompt = await self._get_semantic_prompt(
                 sheet_name=sheet_name, content=truncated_content
             )
 
