@@ -57,6 +57,7 @@ core = [
     "hatchet-sdk ==0.47.1",
     "litellm >=1.69.3",
     "markdown >=3.6,<4.0",
+    "markitdown[xlsx] >=0.0.1a3",
     "mistralai>=1.5.2",
     "msg-parser>=1.2.0",
     "networkx >=3.3,<4.0",
