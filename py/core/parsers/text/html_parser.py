@@ -156,8 +156,13 @@ class HTMLToMarkdownParser(AsyncParser[str | bytes]):
             )
 
             # Convert HTML to Markdown with clean structure
+            # skip_images=True prevents base64 encoded images from being
+            # included in markdown output (they would otherwise be chunked as garbage text)
             options = ConversionOptions(
-                heading_style="atx", list_indent_width=2, bullets="*+-"
+                heading_style="atx",
+                list_indent_width=2,
+                bullets="*+-",
+                skip_images=True,
             )
 
             markdown = convert(preprocessed_html, options)
