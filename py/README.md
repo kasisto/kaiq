@@ -113,6 +113,34 @@ client.documents.list()
 - **🤖 Agentic RAG**: Reasoning agent integrated with retrieval
 - **🔐 User & Access Management**: Complete authentication & collection system
 
+## Enhancements
+
+### HTML CSS Selector-Based Chunking
+
+KAIgentic supports CSS selector mappings for HTML documents using custom CSS classes instead of semantic heading tags. This enables proper `by_title` chunking for organizations with custom HTML structures.
+
+**Problem**: HTML with `<div class="section">` instead of `<h2>` falls back to character-based chunking.
+
+**Solution**: Enabled by default with built-in mappings. Optionally customize in your `*.toml`:
+
+```toml
+[ingestion]
+enable_html_css_heading_mappings = true  # Default: true, set to false to disable
+
+    # Optional: customize CSS-to-heading mappings (uses defaults if not specified)
+    [ingestion.html_css_heading_mappings]
+    "div.pv-section" = "h2"
+    "p.pv-header" = "h3"
+    "p.pv-sub-header" = "h4"
+```
+
+**Testing**: Run `python test_html_css_selectors.py` to verify.
+
+**Files**:
+- Parser: `core/parsers/text/html_parser.py`
+- Config: `core/base/providers/ingestion.py`
+- Test: `test_html_css_selectors.py`
+
 ## Community & Contributing
 
 - [Join our Discord](https://discord.gg/p6KqD2kjtB) for support and discussion

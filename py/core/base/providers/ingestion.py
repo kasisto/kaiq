@@ -50,6 +50,8 @@ class IngestionConfig(ProviderConfig):
         "automatic_extraction": False,
         "skip_graph_extraction_for_types": ["xlsx", "xls"],
         "skip_graph_extraction": False,
+        "enable_html_css_heading_mappings": True,
+        "html_css_heading_mappings": {},
     }
 
     provider: str = Field(
@@ -149,6 +151,16 @@ class IngestionConfig(ProviderConfig):
     document_summary_max_length: int = Field(
         default_factory=lambda: IngestionConfig._defaults[
             "document_summary_max_length"
+        ]
+    )
+    enable_html_css_heading_mappings: bool = Field(
+        default_factory=lambda: IngestionConfig._defaults[
+            "enable_html_css_heading_mappings"
+        ]
+    )
+    html_css_heading_mappings: dict[str, str] = Field(
+        default_factory=lambda: IngestionConfig._defaults[
+            "html_css_heading_mappings"
         ]
     )
 
