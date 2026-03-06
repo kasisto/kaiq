@@ -1,8 +1,9 @@
 # type: ignore
-import logging
-import time
+import base64
 import json
+import logging
 import re
+import time
 from typing import Any, AsyncGenerator, Optional
 
 from core import parsers
@@ -366,30 +367,56 @@ class R2RIngestionProvider(IngestionProvider):
                                 chunk_text = content_item["content"]
 
                                 # Parse embedded metadata from semantic parser output
-                                # Format: text\n\n[XLSX_SEMANTIC_METADATA]{...}[/XLSX_SEMANTIC_METADATA]
+                                # Try base64 format first (current format), then legacy JSON
                                 semantic_metadata = {}
-                                metadata_match = re.search(
-                                    r"\[XLSX_SEMANTIC_METADATA\](.*?)\[/XLSX_SEMANTIC_METADATA\]",
-                                    chunk_text,
-                                    re.DOTALL,
-                                )
 
-                                if metadata_match:
+                                # Try base64 format: [XLSX_SEMANTIC_METADATA_B64]...[/XLSX_SEMANTIC_METADATA_B64]
+                                metadata_match_b64 = re.search(
+                                    r"\[XLSX_SEMANTIC_METADATA_B64\]([A-Za-z0-9+/=]+)"
+                                    r"\[/XLSX_SEMANTIC_METADATA_B64\]",
+                                    chunk_text,
+                                )
+                                if metadata_match_b64:
                                     try:
-                                        semantic_metadata = json.loads(
-                                            metadata_match.group(1)
-                                        )
+                                        metadata_json = base64.b64decode(
+                                            metadata_match_b64.group(1)
+                                        ).decode("utf-8")
+                                        semantic_metadata = json.loads(metadata_json)
                                         # Remove metadata block from chunk text
                                         chunk_text = re.sub(
-                                            r"\n*\[XLSX_SEMANTIC_METADATA\].*?\[/XLSX_SEMANTIC_METADATA\]",
+                                            r"\n*\[XLSX_SEMANTIC_METADATA_B64\]"
+                                            r"[A-Za-z0-9+/=]+\[/XLSX_SEMANTIC_METADATA_B64\]",
                                             "",
                                             chunk_text,
-                                            flags=re.DOTALL,
                                         ).strip()
-                                    except json.JSONDecodeError:
+                                    except (json.JSONDecodeError, UnicodeDecodeError) as e:
                                         logger.warning(
-                                            "Failed to parse semantic metadata JSON"
+                                            f"Failed to parse base64 semantic metadata: {e}"
                                         )
+
+                                # Fallback to legacy JSON format for backward compatibility
+                                if not semantic_metadata:
+                                    metadata_match = re.search(
+                                        r"\[XLSX_SEMANTIC_METADATA\](.*?)\[/XLSX_SEMANTIC_METADATA\]",
+                                        chunk_text,
+                                        re.DOTALL,
+                                    )
+                                    if metadata_match:
+                                        try:
+                                            semantic_metadata = json.loads(
+                                                metadata_match.group(1)
+                                            )
+                                            # Remove metadata block from chunk text
+                                            chunk_text = re.sub(
+                                                r"\n*\[XLSX_SEMANTIC_METADATA\].*?\[/XLSX_SEMANTIC_METADATA\]",
+                                                "",
+                                                chunk_text,
+                                                flags=re.DOTALL,
+                                            ).strip()
+                                        except json.JSONDecodeError:
+                                            logger.warning(
+                                                "Failed to parse semantic metadata JSON"
+                                            )
 
                                 # Build metadata with semantic parser fields
                                 metadata = {

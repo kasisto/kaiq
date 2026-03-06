@@ -20,6 +20,7 @@ Metadata flags set by this parser:
     - page_title: Sheet name
     - chunker_type: "xlsx_semantic"
 """
+import asyncio
 import base64
 import contextlib
 import json
@@ -27,7 +28,7 @@ import logging
 import os
 import re
 import tempfile
-from typing import AsyncGenerator
+from typing import AsyncGenerator, Any
 
 from core.base.abstractions import GenerationConfig
 from core.base.parsers.base_parser import AsyncParser
@@ -45,6 +46,12 @@ MAX_SHEETS_PER_FILE = int(os.getenv("XLSX_SEMANTIC_MAX_SHEETS", "50"))
 # Maximum file size in bytes (100MB default) to prevent memory issues
 MAX_FILE_SIZE_BYTES = int(os.getenv("XLSX_SEMANTIC_MAX_FILE_SIZE_MB", "100")) * 1024 * 1024
 
+# Maximum content size to send to LLM (characters)
+MAX_CONTENT_FOR_LLM = int(os.getenv("XLSX_SEMANTIC_MAX_CONTENT_CHARS", "15000"))
+
+# Maximum page content size to store in metadata (characters, ~100KB default)
+MAX_PAGE_CONTENT_CHARS = int(os.getenv("XLSX_SEMANTIC_MAX_PAGE_CONTENT_CHARS", "100000"))
+
 
 @contextlib.contextmanager
 def safe_temp_file(data: bytes, suffix: str):
@@ -60,8 +67,8 @@ def safe_temp_file(data: bytes, suffix: str):
         if tmp_path and os.path.exists(tmp_path):
             try:
                 os.unlink(tmp_path)
-            except Exception:
-                pass  # Best effort cleanup
+            except Exception as e:
+                logger.warning(f"Failed to clean up temp file {tmp_path}: {e}")
 
 # Prompt name for database lookup
 XLSX_SEMANTIC_PROMPT_NAME = "xlsx_semantic"
@@ -113,7 +120,7 @@ class XLSXSemanticParser(AsyncParser[str | bytes]):
         config: IngestionConfig,
         database_provider: DatabaseProvider,
         llm_provider: CompletionProvider,
-        ocr_provider=None,  # Accept but ignore for consistency
+        ocr_provider: Any = None,  # Accept but ignore for consistency
     ):
         self.config = config
         self.database_provider = database_provider
@@ -122,12 +129,8 @@ class XLSXSemanticParser(AsyncParser[str | bytes]):
         # Initialize MarkItDown lazily
         self._md_converter = None
 
-        # Prompt template (loaded from database or fallback to default)
-        # Will be loaded lazily on first use via _get_semantic_prompt()
-        self._semantic_prompt_template: str | None = None
-
-        # Max content size to send to LLM (characters)
-        self.max_content_for_llm = 15000
+        # Max content size to send to LLM (characters) - configurable via env var
+        self.max_content_for_llm = MAX_CONTENT_FOR_LLM
 
         logger.info("XLSXSemanticParser initialized")
 
@@ -229,7 +232,7 @@ class XLSXSemanticParser(AsyncParser[str | bytes]):
                 f"{MAX_SHEETS_PER_FILE} (set XLSX_SEMANTIC_MAX_SHEETS to change)"
             )
 
-        # Process each sheet (with limit for cost control)
+        # Process each sheet sequentially (async calls don't block event loop)
         sheets_processed = 0
         for sheet_name, sheet_content in sheets.items():
             if sheets_processed >= MAX_SHEETS_PER_FILE:
@@ -255,11 +258,6 @@ class XLSXSemanticParser(AsyncParser[str | bytes]):
             )
 
             if semantic_description:
-                # Yield the semantic description as the chunk text
-                # The raw content is included in a special format that
-                # the ingestion pipeline will parse into metadata
-                #
-                # Format: [XLSX_SEMANTIC] markers for downstream processing
                 chunk_with_metadata = self._format_chunk_with_metadata(
                     semantic_description=semantic_description,
                     page_content=sheet_content,
@@ -275,10 +273,20 @@ class XLSXSemanticParser(AsyncParser[str | bytes]):
                 yield sheet_content
 
     async def _convert_to_markdown(self, data: bytes) -> str:
-        """Convert Excel bytes to Markdown using MarkItDown."""
+        """Convert Excel bytes to Markdown using MarkItDown.
+
+        Uses run_in_executor to avoid blocking the event loop since
+        MarkItDown.convert() is a synchronous operation that can take
+        several seconds for large files.
+        """
         try:
             with safe_temp_file(data, ".xlsx") as tmp_path:
-                result = self.md_converter.convert(tmp_path)
+                # Run synchronous MarkItDown conversion in thread pool
+                # to avoid blocking the event loop
+                loop = asyncio.get_running_loop()
+                result = await loop.run_in_executor(
+                    None, self.md_converter.convert, tmp_path
+                )
                 markdown_content = result.text_content
 
                 logger.debug(
@@ -349,11 +357,14 @@ class XLSXSemanticParser(AsyncParser[str | bytes]):
                 sheet_name=sheet_name, content=truncated_content
             )
 
-            # Create generation config for this request
-            # Use fast_llm from app config for efficiency
-            model = getattr(self.config, "app", None)
-            model = getattr(model, "fast_llm", None) if model else None
-            model = model or os.getenv("XLSX_SEMANTIC_MODEL", "openai/gpt-4.1")
+            # Get model from config or env var - no fallback
+            model = os.getenv("XLSX_SEMANTIC_MODEL")
+            if not model:
+                logger.warning(
+                    "XLSX_SEMANTIC_MODEL env var not set. "
+                    "Skipping semantic parsing, using raw content."
+                )
+                return None
 
             generation_config = GenerationConfig(
                 model=model,
@@ -391,11 +402,8 @@ class XLSXSemanticParser(AsyncParser[str | bytes]):
             logger.error(
                 f"LLM semantic chunking failed for sheet '{sheet_name}': {e}"
             )
-            # Return a simple fallback description
-            return (
-                f"Spreadsheet data from sheet '{sheet_name}' "
-                f"containing tabular information."
-            )
+            # Return None to trigger raw content fallback in ingest()
+            return None
 
     def _format_chunk_with_metadata(
         self,
@@ -412,12 +420,22 @@ class XLSXSemanticParser(AsyncParser[str | bytes]):
         Format uses base64-encoded JSON block for safe parsing (avoids regex
         escaping issues with special characters in content).
         """
+        # Truncate page content if too large
+        truncated = len(page_content) > MAX_PAGE_CONTENT_CHARS
+        if truncated:
+            logger.warning(
+                f"Sheet '{page_title}' content truncated from {len(page_content)} "
+                f"to {MAX_PAGE_CONTENT_CHARS} chars"
+            )
+            page_content = page_content[:MAX_PAGE_CONTENT_CHARS] + "\n... [content truncated]"
+
         # Create metadata block as JSON
         metadata = {
             "use_page_content": True,
             "page_content": page_content,
             "page_title": page_title,
             "chunker_type": "xlsx_semantic",
+            "page_content_truncated": truncated,
         }
 
         # Base64 encode the JSON to avoid escaping issues with special characters
@@ -442,10 +460,16 @@ class XLSSemanticParser(XLSXSemanticParser):
     """
 
     async def _convert_to_markdown(self, data: bytes) -> str:
-        """Convert XLS bytes to Markdown using MarkItDown."""
+        """Convert XLS bytes to Markdown using MarkItDown.
+
+        Uses run_in_executor to avoid blocking the event loop.
+        """
         try:
             with safe_temp_file(data, ".xls") as tmp_path:
-                result = self.md_converter.convert(tmp_path)
+                loop = asyncio.get_running_loop()
+                result = await loop.run_in_executor(
+                    None, self.md_converter.convert, tmp_path
+                )
                 return result.text_content
 
         except Exception as e:

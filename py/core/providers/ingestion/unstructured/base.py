@@ -241,12 +241,12 @@ class UnstructuredIngestionProvider(IngestionProvider):
                 contents.append({"content": chunk})
 
         if not contents:
-            logging.warning(
+            logger.warning(
                 "No valid text content was extracted during parsing"
             )
             return
 
-        logging.info(f"Fallback ingestion with config = {ingestion_config}")
+        logger.info(f"Fallback ingestion with config = {ingestion_config}")
 
         vlm_ocr_one_page_per_chunk = ingestion_config.get(
             "vlm_ocr_one_page_per_chunk", True
@@ -294,7 +294,7 @@ class UnstructuredIngestionProvider(IngestionProvider):
                             text,
                         ).strip()
                     except (json.JSONDecodeError, UnicodeDecodeError) as e:
-                        logging.warning(
+                        logger.warning(
                             f"Failed to parse base64 semantic metadata: {e}"
                         )
 
@@ -317,7 +317,7 @@ class UnstructuredIngestionProvider(IngestionProvider):
                                 flags=re.DOTALL,
                             ).strip()
                         except json.JSONDecodeError:
-                            logging.warning("Failed to parse semantic metadata JSON")
+                            logger.warning("Failed to parse semantic metadata JSON")
 
                 # Apply semantic metadata to chunk if parsed successfully
                 if semantic_metadata:

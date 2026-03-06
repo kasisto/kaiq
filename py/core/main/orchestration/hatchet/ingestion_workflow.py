@@ -41,10 +41,20 @@ def should_skip_graph_extraction(
     """
     Determine if graph extraction should be skipped for a document.
 
+    Skip logic (in order of evaluation):
+    1. If doc_type is in skip_types (e.g., xlsx) AND parser is NOT "semantic" → skip
+       - This allows semantic Excel (with meaningful descriptions) to have graph extraction
+       - Raw Excel (without semantic parser) is auto-skipped (entities would be meaningless)
+    2. If ingestion_config has skip_graph_extraction=True → skip (manual override)
+
+    Note: The TOML config `skip_graph_extraction_for_types` does NOT unconditionally skip.
+    It only skips when the parser_overrides doesn't specify "semantic" for that type.
+    This is intentional - semantic Excel uploads WILL get graph extraction.
+
     Args:
         doc_type: Document type (e.g., 'xlsx', 'pdf')
-        skip_types: List of document types to auto-skip
-        ingestion_config: Ingestion config from frontend
+        skip_types: List of document types to auto-skip (from TOML config)
+        ingestion_config: Ingestion config from frontend (may include parser_overrides)
         document_id: Document ID for logging
 
     Returns:
