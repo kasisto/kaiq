@@ -169,10 +169,8 @@ class TestSemanticChunkGeneration:
 
         result = await parser._generate_semantic_chunk("TestSheet", "content")
 
-        # Should return fallback description
-        assert result is not None
-        assert "TestSheet" in result
-        assert "tabular" in result.lower() or "spreadsheet" in result.lower()
+        # Should return None to trigger raw content fallback in caller (ingest method)
+        assert result is None
 
     @pytest.mark.asyncio
     async def test_content_truncation_for_llm(self, parser):
@@ -250,6 +248,49 @@ class TestMetadataFormatting:
         metadata = json.loads(metadata_json)
         assert 'Content with "quotes"' in metadata["page_content"]
         assert "[brackets]" in metadata["page_content"]
+
+    def test_format_chunk_truncation_flag_false(self, parser):
+        """Test that truncation flag is False for small content."""
+        result = parser._format_chunk_with_metadata(
+            semantic_description="Test",
+            page_content="Small content",
+            page_title="Sheet1",
+        )
+
+        import re
+
+        match = re.search(
+            r"\[XLSX_SEMANTIC_METADATA_B64\]([A-Za-z0-9+/=]+)"
+            r"\[/XLSX_SEMANTIC_METADATA_B64\]",
+            result,
+        )
+        metadata_json = base64.b64decode(match.group(1)).decode("utf-8")
+        metadata = json.loads(metadata_json)
+        assert metadata["page_content_truncated"] is False
+
+    def test_format_chunk_truncation_flag_true(self, parser):
+        """Test that large content is truncated with flag set."""
+        from core.parsers.structured.xlsx_semantic_parser import MAX_PAGE_CONTENT_CHARS
+
+        large_content = "x" * (MAX_PAGE_CONTENT_CHARS + 1000)
+        result = parser._format_chunk_with_metadata(
+            semantic_description="Test",
+            page_content=large_content,
+            page_title="LargeSheet",
+        )
+
+        import re
+
+        match = re.search(
+            r"\[XLSX_SEMANTIC_METADATA_B64\]([A-Za-z0-9+/=]+)"
+            r"\[/XLSX_SEMANTIC_METADATA_B64\]",
+            result,
+        )
+        metadata_json = base64.b64decode(match.group(1)).decode("utf-8")
+        metadata = json.loads(metadata_json)
+        assert metadata["page_content_truncated"] is True
+        assert "[content truncated]" in metadata["page_content"]
+        assert len(metadata["page_content"]) <= MAX_PAGE_CONTENT_CHARS + 50  # +50 for truncation marker
 
 
 class TestFullIngestion:

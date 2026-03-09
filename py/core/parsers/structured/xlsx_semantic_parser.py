@@ -52,6 +52,9 @@ MAX_CONTENT_FOR_LLM = int(os.getenv("XLSX_SEMANTIC_MAX_CONTENT_CHARS", "15000"))
 # Maximum page content size to store in metadata (characters, ~100KB default)
 MAX_PAGE_CONTENT_CHARS = int(os.getenv("XLSX_SEMANTIC_MAX_PAGE_CONTENT_CHARS", "100000"))
 
+# Default model for semantic description generation
+DEFAULT_SEMANTIC_MODEL = "openai/gpt-4.1"
+
 
 @contextlib.contextmanager
 def safe_temp_file(data: bytes, suffix: str):
@@ -357,14 +360,8 @@ class XLSXSemanticParser(AsyncParser[str | bytes]):
                 sheet_name=sheet_name, content=truncated_content
             )
 
-            # Get model from config or env var - no fallback
-            model = os.getenv("XLSX_SEMANTIC_MODEL")
-            if not model:
-                logger.warning(
-                    "XLSX_SEMANTIC_MODEL env var not set. "
-                    "Skipping semantic parsing, using raw content."
-                )
-                return None
+            # Get model from config.app.fast_llm (kaigentic.toml) or fallback
+            model = getattr(getattr(self.config, "app", None), "fast_llm", None) or DEFAULT_SEMANTIC_MODEL
 
             generation_config = GenerationConfig(
                 model=model,

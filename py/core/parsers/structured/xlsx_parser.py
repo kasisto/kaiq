@@ -66,9 +66,9 @@ class XLSXParserAdvanced(AsyncParser[str | bytes]):
         if arr.size == 0:
             return
         g = self.nx.grid_2d_graph(len(arr), len(arr[0]))
-        # Use vectorized None check - create boolean mask for empty cells
-        # arr == None works element-wise for object arrays
-        empty_mask = self.np.vectorize(lambda x: x is None)(arr)
+        # Use vectorized None check - np.equal handles None comparison correctly
+        # for object arrays without Python-level loop overhead
+        empty_mask = self.np.equal(arr, None)
         empty_cell_indices = list(
             zip(*self.np.where(empty_mask), strict=False)
         )

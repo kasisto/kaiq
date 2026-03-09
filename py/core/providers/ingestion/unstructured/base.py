@@ -26,6 +26,7 @@ from core.base.abstractions import R2RSerializable
 from core.base.providers.ingestion import IngestionConfig, IngestionProvider
 from core.providers.ocr import MistralOCRProvider
 from core.utils import generate_extraction_id
+from core.utils.semantic_metadata import parse_semantic_metadata
 
 from ...database import PostgresDatabaseProvider
 from ...llm import (
@@ -272,52 +273,7 @@ class UnstructuredIngestionProvider(IngestionProvider):
 
             # Handle semantic parser output - extract embedded metadata
             elif is_semantic_parser:
-                semantic_metadata = None
-
-                # Try new base64 format first (more robust)
-                metadata_match_b64 = re.search(
-                    r"\[XLSX_SEMANTIC_METADATA_B64\]([A-Za-z0-9+/=]+)"
-                    r"\[/XLSX_SEMANTIC_METADATA_B64\]",
-                    text,
-                )
-                if metadata_match_b64:
-                    try:
-                        metadata_json = base64.b64decode(
-                            metadata_match_b64.group(1)
-                        ).decode("utf-8")
-                        semantic_metadata = json.loads(metadata_json)
-                        # Remove metadata block from text
-                        text = re.sub(
-                            r"\n*\[XLSX_SEMANTIC_METADATA_B64\]"
-                            r"[A-Za-z0-9+/=]+\[/XLSX_SEMANTIC_METADATA_B64\]",
-                            "",
-                            text,
-                        ).strip()
-                    except (json.JSONDecodeError, UnicodeDecodeError) as e:
-                        logger.warning(
-                            f"Failed to parse base64 semantic metadata: {e}"
-                        )
-
-                # Fallback to legacy JSON format for backward compatibility
-                if semantic_metadata is None:
-                    metadata_match = re.search(
-                        r"\[XLSX_SEMANTIC_METADATA\](.*?)\[/XLSX_SEMANTIC_METADATA\]",
-                        text,
-                        re.DOTALL,
-                    )
-                    if metadata_match:
-                        try:
-                            semantic_metadata = json.loads(metadata_match.group(1))
-                            # Remove metadata block from text
-                            text = re.sub(
-                                r"\n*\[XLSX_SEMANTIC_METADATA\].*?"
-                                r"\[/XLSX_SEMANTIC_METADATA\]",
-                                "",
-                                text,
-                                flags=re.DOTALL,
-                            ).strip()
-                        except json.JSONDecodeError:
-                            logger.warning("Failed to parse semantic metadata JSON")
+                text, semantic_metadata = parse_semantic_metadata(text)
 
                 # Apply semantic metadata to chunk if parsed successfully
                 if semantic_metadata:
