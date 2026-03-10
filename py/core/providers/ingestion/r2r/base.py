@@ -169,7 +169,7 @@ class R2RIngestionProvider(IngestionProvider):
                         f"Parser {parser_name} for document type {doc_type} not found: {e}"
                     )
 
-    def _ensure_parser_initialized(self, parser_name: str, doc_type) -> str:
+    def _ensure_parser_initialized(self, parser_name: str, doc_type: DocumentType) -> str:
         """Lazily initialize an extra parser if not already done."""
         parser_key = f"{parser_name}_{str(doc_type)}"
         if parser_key not in self.parsers:
@@ -305,26 +305,9 @@ class R2RIngestionProvider(IngestionProvider):
                     logger.info(
                         f"Using extra_parser '{parser_name}' for {document.document_type} from config"
                     )
-
-                    # Lazily initialize the parser if not already initialized
-                    parser_key = f"{parser_name}_{doc_type_key}"
-                    if parser_key not in self.parsers:
-                        if (
-                            document.document_type in self.EXTRA_PARSERS
-                            and parser_name
-                            in self.EXTRA_PARSERS[document.document_type]
-                        ):
-                            self.parsers[parser_key] = self.EXTRA_PARSERS[
-                                document.document_type
-                            ][parser_name](
-                                config=self.config,
-                                database_provider=self.database_provider,
-                                llm_provider=self.llm_provider,
-                                ocr_provider=self.ocr_provider,
-                            )
-                            logger.info(
-                                f"Lazily initialized parser {parser_name} for {document.document_type}"
-                            )
+                    self._ensure_parser_initialized(
+                        parser_name, document.document_type
+                    )
 
             if document.document_type.value in parser_overrides:
                 override_parser_name = parser_overrides[document.document_type.value]

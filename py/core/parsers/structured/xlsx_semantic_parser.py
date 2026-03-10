@@ -361,7 +361,8 @@ class XLSXSemanticParser(AsyncParser[str | bytes]):
             )
 
             # Get model from config.app.fast_llm (kaigentic.toml) or fallback
-            model = getattr(getattr(self.config, "app", None), "fast_llm", None) or DEFAULT_SEMANTIC_MODEL
+            app_config = getattr(self.config, "app", None)
+            model = getattr(app_config, "fast_llm", None) or DEFAULT_SEMANTIC_MODEL
 
             generation_config = GenerationConfig(
                 model=model,

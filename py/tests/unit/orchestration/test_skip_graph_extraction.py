@@ -133,3 +133,23 @@ class TestShouldSkipGraphExtraction:
         )
         # Manual skip takes precedence
         assert result is True
+
+    def test_semantic_via_extra_parsers_returns_false(self):
+        """Semantic xlsx via extra_parsers config should NOT be skipped."""
+        result = should_skip_graph_extraction(
+            doc_type="xlsx",
+            skip_types=["xlsx", "xls"],
+            ingestion_config={"extra_parsers": {"xlsx": ["semantic"]}},
+            document_id="test-doc-12",
+        )
+        assert result is False
+
+    def test_non_semantic_extra_parser_still_skips(self):
+        """Non-semantic extra_parser should still skip."""
+        result = should_skip_graph_extraction(
+            doc_type="xlsx",
+            skip_types=["xlsx"],
+            ingestion_config={"extra_parsers": {"xlsx": ["advanced"]}},
+            document_id="test-doc-13",
+        )
+        assert result is True

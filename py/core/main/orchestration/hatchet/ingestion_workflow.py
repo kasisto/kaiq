@@ -62,11 +62,17 @@ def should_skip_graph_extraction(
     """
     skip_graph = False
     parser_overrides = ingestion_config.get("parser_overrides", {})
+    extra_parsers = ingestion_config.get("extra_parsers", {})
 
     # Auto-skip for raw Excel (but allow semantic Excel)
     if doc_type in skip_types:
         parser_for_type = parser_overrides.get(doc_type)
-        if parser_for_type != "semantic":
+        extra_for_type = extra_parsers.get(doc_type, [])
+        is_semantic = (
+            parser_for_type == "semantic"
+            or "semantic" in extra_for_type
+        )
+        if not is_semantic:
             skip_graph = True
             logger.info(
                 f"Auto-skipping graph extraction for raw {doc_type} "
