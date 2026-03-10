@@ -319,6 +319,7 @@ class IngestionConfig(R2RSerializable):
         ChunkEnrichmentSettings()
     )
     extra_parsers: dict[str, Any] = {}
+    parser_overrides: dict[str, str] = {}  # e.g., {"xlsx": "semantic"} to select parser
     audio_transcription_model: str = ""
 
     vlm: Optional[str] = None
@@ -328,6 +329,7 @@ class IngestionConfig(R2RSerializable):
     vlm_ocr_one_page_per_chunk: bool = True
 
     skip_document_summary: bool = False
+    skip_graph_extraction: bool = False  # Skip knowledge graph extraction for this document
     document_summary_system_prompt: str = "system"
     document_summary_task_prompt: str = "summary"
     chunks_for_document_summary: int = 128

@@ -1,0 +1,33 @@
+xlsx_semantic:
+  template: >
+    Create a searchable index description for this spreadsheet data.
+
+    This description is ONLY for search matching - the raw data will be provided separately as the authoritative source.
+
+    Include for search matching:
+    1. What type of data this is (rates, pricing, inventory, metrics, schedules, etc.)
+    2. ALL column headers and field names
+    3. ALL entity names, product names, categories, identifiers mentioned
+    4. Value RANGES and categories (e.g., "credit scores 620-850", "terms 24-84 months")
+    5. Time periods and date ranges covered
+    6. Key searchable terms users might query
+
+    DO NOT include:
+    - Every individual data value (the raw data has those)
+    - Lengthy descriptions or analysis
+    - Redundant information
+
+    Keep it concise - this is an index for finding the data, not a replacement for it.
+    The raw spreadsheet data will be the authoritative source for exact values.
+
+    Sheet Name: {sheet_name}
+
+    Content:
+    {content}
+
+    Return ONLY the index description, no other text.
+
+  input_types:
+    sheet_name: str
+    content: str
+  overwrite_on_diff: true

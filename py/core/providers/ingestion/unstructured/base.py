@@ -1,5 +1,6 @@
 import asyncio
 import base64
+import json
 import logging
 import os
 import time
@@ -24,6 +25,7 @@ from core.base.abstractions import R2RSerializable
 from core.base.providers.ingestion import IngestionConfig, IngestionProvider
 from core.providers.ocr import MistralOCRProvider
 from core.utils import generate_extraction_id
+from core.utils.semantic_metadata import parse_semantic_metadata
 
 from ...database import PostgresDatabaseProvider
 from ...llm import (
@@ -72,8 +74,6 @@ class UnstructuredIngestionConfig(IngestionConfig):
     xml_keep_tags: bool | None = None
 
     def to_ingestion_request(self):
-        import json
-
         x = json.loads(self.json())
         x.pop("extra_fields", None)
         x.pop("provider", None)
@@ -110,7 +110,13 @@ class UnstructuredIngestionProvider(IngestionProvider):
             "unstructured": parsers.PDFParserUnstructured,  # type: ignore
             "zerox": parsers.VLMPDFParser,  # type: ignore
         },
-        DocumentType.XLSX: {"advanced": parsers.XLSXParserAdvanced},  # type: ignore
+        DocumentType.XLSX: {
+            "advanced": parsers.XLSXParserAdvanced,  # type: ignore
+            "semantic": parsers.XLSXSemanticParser,  # type: ignore
+        },
+        DocumentType.XLS: {
+            "semantic": parsers.XLSSemanticParser,  # type: ignore
+        },
         DocumentType.HTML: {"html_to_markdown": parsers.HTMLToMarkdownParser},  # type: ignore
         DocumentType.HTM: {"html_to_markdown": parsers.HTMLToMarkdownParser},  # type: ignore
     }
@@ -219,6 +225,22 @@ class UnstructuredIngestionProvider(IngestionProvider):
                         f"Parser {parser_name} for document type {doc_type} not found: {e}"
                     )
 
+    def _ensure_parser_initialized(self, parser_name: str, doc_type: DocumentType) -> str:
+        """Lazily initialize an extra parser if not already done."""
+        parser_key = f"{parser_name}_{str(doc_type)}"
+        if parser_key not in self.parsers:
+            if doc_type in self.EXTRA_PARSERS and parser_name in self.EXTRA_PARSERS[doc_type]:
+                self.parsers[parser_key] = self.EXTRA_PARSERS[doc_type][parser_name](
+                    config=self.config,
+                    database_provider=self.database_provider,
+                    llm_provider=self.llm_provider,
+                    ocr_provider=self.ocr_provider,
+                )
+                logger.info(
+                    f"Lazily initialized {parser_name} parser for {doc_type}"
+                )
+        return parser_key
+
     async def parse_fallback(
         self,
         file_content: bytes,
@@ -235,20 +257,24 @@ class UnstructuredIngestionProvider(IngestionProvider):
                 contents.append({"content": chunk})
 
         if not contents:
-            logging.warning(
+            logger.warning(
                 "No valid text content was extracted during parsing"
             )
             return
 
-        logging.info(f"Fallback ingestion with config = {ingestion_config}")
+        logger.info(f"Fallback ingestion with config = {ingestion_config}")
 
         vlm_ocr_one_page_per_chunk = ingestion_config.get(
             "vlm_ocr_one_page_per_chunk", True
         )
 
+        # Check if this is semantic parser output (has embedded metadata)
+        is_semantic_parser = parser_name.startswith("semantic_")
+
         iteration = 0
         for content_item in contents:
             text = content_item["content"]
+            chunk_metadata = {"chunk_id": iteration}
 
             # FAQ parser: yield each Q&A pair as-is without splitting
             if parser_name.startswith("faq_"):
@@ -259,17 +285,36 @@ class UnstructuredIngestionProvider(IngestionProvider):
                 )
                 iteration += 1
                 await asyncio.sleep(0)
+
+            # Handle semantic parser output - extract embedded metadata
+            elif is_semantic_parser:
+                text, semantic_metadata = parse_semantic_metadata(text)
+
+                # Apply semantic metadata to chunk if parsed successfully
+                if semantic_metadata:
+                    chunk_metadata.update(semantic_metadata)
+
+                # For semantic parser, yield one chunk per sheet (no splitting)
+                if "page_number" in content_item:
+                    chunk_metadata["page_number"] = content_item["page_number"]
+
+                yield FallbackElement(
+                    text=text or "No content extracted.",
+                    metadata=chunk_metadata,
+                )
+                iteration += 1
+                await asyncio.sleep(0)
+
             elif vlm_ocr_one_page_per_chunk and parser_name.startswith(
                 ("zerox_", "ocr_")
             ):
                 # Use one page per chunk for OCR/VLM
-                metadata = {"chunk_id": iteration}
                 if "page_number" in content_item:
-                    metadata["page_number"] = content_item["page_number"]
+                    chunk_metadata["page_number"] = content_item["page_number"]
 
                 yield FallbackElement(
                     text=text or "No content extracted.",
-                    metadata=metadata,
+                    metadata=chunk_metadata,
                 )
                 iteration += 1
                 await asyncio.sleep(0)
@@ -285,13 +330,13 @@ class UnstructuredIngestionProvider(IngestionProvider):
                 )
 
                 for text_chunk in chunks:
-                    metadata = {"chunk_id": iteration}
+                    chunk_metadata = {"chunk_id": iteration}
                     if "page_number" in content_item:
-                        metadata["page_number"] = content_item["page_number"]
+                        chunk_metadata["page_number"] = content_item["page_number"]
 
                     yield FallbackElement(
                         text=text_chunk.page_content,
-                        metadata=metadata,
+                        metadata=chunk_metadata,
                     )
                     iteration += 1
                     await asyncio.sleep(0)
@@ -321,35 +366,20 @@ class UnstructuredIngestionProvider(IngestionProvider):
         extra_parsers_config = ingestion_config.get("extra_parsers", {})
         doc_type_key = document.document_type.value
 
-        # If extra parser is configured for this document type, use it as parser_override
+        # If extra parser is configured AND no API override exists, use config as default
         if doc_type_key in extra_parsers_config and extra_parsers_config[doc_type_key]:
-            # Get the first parser from the list
-            parser_list = extra_parsers_config[doc_type_key]
-            if isinstance(parser_list, list) and len(parser_list) > 0:
-                parser_name = parser_list[0]
-                parser_overrides[doc_type_key] = parser_name
-                logger.info(
-                    f"Using extra_parser '{parser_name}' for {document.document_type} from config"
-                )
-
-                # Lazily initialize the parser if not already initialized
-                parser_key = f"{parser_name}_{doc_type_key}"
-                if parser_key not in self.parsers:
-                    if (
-                        document.document_type in self.EXTRA_PARSERS
-                        and parser_name in self.EXTRA_PARSERS[document.document_type]
-                    ):
-                        self.parsers[parser_key] = self.EXTRA_PARSERS[
-                            document.document_type
-                        ][parser_name](
-                            config=self.config,
-                            database_provider=self.database_provider,
-                            llm_provider=self.llm_provider,
-                            ocr_provider=self.ocr_provider,
-                        )
-                        logger.info(
-                            f"Lazily initialized parser {parser_name} for {document.document_type}"
-                        )
+            # Only use extra_parsers default if no API override provided
+            if doc_type_key not in parser_overrides:
+                parser_list = extra_parsers_config[doc_type_key]
+                if isinstance(parser_list, list) and len(parser_list) > 0:
+                    parser_name = parser_list[0]
+                    parser_overrides[doc_type_key] = parser_name
+                    logger.info(
+                        f"Using extra_parser '{parser_name}' for {document.document_type} from config (no API override)"
+                    )
+                    self._ensure_parser_initialized(
+                        parser_name, document.document_type
+                    )
 
         elements = []
 
@@ -398,6 +428,30 @@ class UnstructuredIngestionProvider(IngestionProvider):
                         f"Using FAQ parser for {document.document_type}"
                     )
                     elements.append(element)
+            elif parser_name == "semantic":
+                # Use semantic parser for XLSX/XLS files (LLM-based chunking)
+                parser_key = self._ensure_parser_initialized(
+                    "semantic", document.document_type
+                )
+                if parser_key in self.parsers:
+                    async for element in self.parse_fallback(
+                        file_content,
+                        ingestion_config=ingestion_config,
+                        parser_name=parser_key,
+                    ):
+                        elements.append(element)
+            elif parser_name == "advanced":
+                # Use advanced parser for XLSX/XLS files (connected components)
+                parser_key = self._ensure_parser_initialized(
+                    "advanced", document.document_type
+                )
+                if parser_key in self.parsers:
+                    async for element in self.parse_fallback(
+                        file_content,
+                        ingestion_config=ingestion_config,
+                        parser_name=parser_key,
+                    ):
+                        elements.append(element)
 
         elif document.document_type in self.R2R_FALLBACK_PARSERS.keys():
             logger.info(

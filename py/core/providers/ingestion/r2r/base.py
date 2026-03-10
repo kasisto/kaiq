@@ -24,6 +24,7 @@ from core.providers.llm import (
 )
 from core.providers.ocr import MistralOCRProvider
 from core.utils import generate_extraction_id
+from core.utils.semantic_metadata import parse_semantic_metadata
 
 logger = logging.getLogger()
 
@@ -85,7 +86,13 @@ class R2RIngestionProvider(IngestionProvider):
             "unstructured": parsers.PDFParserUnstructured,
             "zerox": parsers.VLMPDFParser,
         },
-        DocumentType.XLSX: {"advanced": parsers.XLSXParserAdvanced},
+        DocumentType.XLSX: {
+            "advanced": parsers.XLSXParserAdvanced,
+            "semantic": parsers.XLSXSemanticParser,
+        },
+        DocumentType.XLS: {
+            "semantic": parsers.XLSSemanticParser,
+        },
         DocumentType.HTML: {"html_to_markdown": parsers.HTMLToMarkdownParser},
         DocumentType.HTM: {"html_to_markdown": parsers.HTMLToMarkdownParser},
     }
@@ -161,6 +168,22 @@ class R2RIngestionProvider(IngestionProvider):
                     logger.error(
                         f"Parser {parser_name} for document type {doc_type} not found: {e}"
                     )
+
+    def _ensure_parser_initialized(self, parser_name: str, doc_type: DocumentType) -> str:
+        """Lazily initialize an extra parser if not already done."""
+        parser_key = f"{parser_name}_{str(doc_type)}"
+        if parser_key not in self.parsers:
+            if doc_type in self.EXTRA_PARSERS and parser_name in self.EXTRA_PARSERS[doc_type]:
+                self.parsers[parser_key] = self.EXTRA_PARSERS[doc_type][parser_name](
+                    config=self.config,
+                    database_provider=self.database_provider,
+                    llm_provider=self.llm_provider,
+                    ocr_provider=self.ocr_provider,
+                )
+                logger.info(
+                    f"Lazily initialized {parser_name} parser for {doc_type}"
+                )
+        return parser_key
 
     def _build_text_splitter(
         self, ingestion_config_override: Optional[dict] = None
@@ -282,26 +305,9 @@ class R2RIngestionProvider(IngestionProvider):
                     logger.info(
                         f"Using extra_parser '{parser_name}' for {document.document_type} from config"
                     )
-
-                    # Lazily initialize the parser if not already initialized
-                    parser_key = f"{parser_name}_{doc_type_key}"
-                    if parser_key not in self.parsers:
-                        if (
-                            document.document_type in self.EXTRA_PARSERS
-                            and parser_name
-                            in self.EXTRA_PARSERS[document.document_type]
-                        ):
-                            self.parsers[parser_key] = self.EXTRA_PARSERS[
-                                document.document_type
-                            ][parser_name](
-                                config=self.config,
-                                database_provider=self.database_provider,
-                                llm_provider=self.llm_provider,
-                                ocr_provider=self.ocr_provider,
-                            )
-                            logger.info(
-                                f"Lazily initialized parser {parser_name} for {document.document_type}"
-                            )
+                    self._ensure_parser_initialized(
+                        parser_name, document.document_type
+                    )
 
             if document.document_type.value in parser_overrides:
                 override_parser_name = parser_overrides[document.document_type.value]
@@ -320,6 +326,103 @@ class R2RIngestionProvider(IngestionProvider):
                             contents.append(chunk)
                         elif chunk:
                             contents.append({"content": chunk})
+
+                # Handle semantic parser for XLSX/XLS files
+                elif override_parser_name == "semantic":
+                    parser_key = self._ensure_parser_initialized(
+                        "semantic", document.document_type
+                    )
+                    if parser_key in self.parsers:
+                        iteration = 0
+                        async for chunk in self.parsers[parser_key].ingest(
+                            file_content, **ingestion_config_override
+                        ):
+                            chunk_text = chunk.get("content") if isinstance(chunk, dict) else chunk
+                            if not chunk_text:
+                                continue
+
+                            # Parse embedded metadata from semantic parser output
+                            chunk_text, semantic_metadata = parse_semantic_metadata(
+                                chunk_text
+                            )
+
+                            # Build metadata with semantic parser fields
+                            metadata = {
+                                **document.metadata,
+                                "chunk_order": iteration,
+                                "chunker_type": semantic_metadata.get(
+                                    "chunker_type", "xlsx_semantic"
+                                ),
+                                "use_page_content": semantic_metadata.get(
+                                    "use_page_content", True
+                                ),
+                                "page_title": semantic_metadata.get(
+                                    "page_title", ""
+                                ),
+                            }
+
+                            # Store page_content in metadata for retrieval enrichment
+                            if semantic_metadata.get("page_content"):
+                                metadata["page_content"] = semantic_metadata[
+                                    "page_content"
+                                ]
+
+                            yield DocumentChunk(
+                                id=generate_extraction_id(document.id, iteration),
+                                document_id=document.id,
+                                owner_id=document.owner_id,
+                                collection_ids=document.collection_ids,
+                                data=chunk_text,
+                                metadata=metadata,
+                            )
+                            iteration += 1
+
+                        if iteration > 0:
+                            logger.debug(
+                                f"Parsed semantic Excel document with id={document.id}, "
+                                f"into {iteration} semantic chunks in t={time.time() - t0:.2f} seconds."
+                            )
+                            return
+
+                # Handle advanced parser for XLSX/XLS files
+                elif override_parser_name == "advanced":
+                    parser_key = self._ensure_parser_initialized(
+                        "advanced", document.document_type
+                    )
+                    if parser_key in self.parsers:
+                        iteration = 0
+                        async for chunk in self.parsers[parser_key].ingest(
+                            file_content, **ingestion_config_override
+                        ):
+                            chunk_text = chunk.get("content") if isinstance(chunk, dict) else chunk
+                            if not chunk_text:
+                                continue
+
+                            yield DocumentChunk(
+                                id=generate_extraction_id(document.id, iteration),
+                                document_id=document.id,
+                                owner_id=document.owner_id,
+                                collection_ids=document.collection_ids,
+                                data=chunk_text,
+                                metadata={
+                                    **document.metadata,
+                                    "chunk_order": iteration,
+                                    "chunker_type": "xlsx_advanced",
+                                },
+                            )
+                            iteration += 1
+
+                        if iteration > 0:
+                            logger.info(
+                                f"Parsed advanced Excel document with id={document.id}, "
+                                f"into {iteration} chunks in t={time.time() - t0:.2f} seconds."
+                            )
+                            return
+                    else:
+                        logger.warning(
+                            f"Advanced parser key {parser_key} not found in parsers"
+                        )
+
                 elif override_parser_name == "zerox":
                     # Collect content from VLMPDFParser
                     async for chunk in self.parsers[
@@ -475,7 +578,7 @@ class R2RIngestionProvider(IngestionProvider):
                         contents.append({"content": text})
 
             if not contents:
-                logging.warning(
+                logger.warning(
                     "No valid text content was extracted during parsing"
                 )
                 return

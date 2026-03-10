@@ -30,6 +30,8 @@ __all__ = [
     "XLSParser",
     "XLSXParser",
     "XLSXParserAdvanced",
+    "XLSXSemanticParser",
+    "XLSSemanticParser",
     "MDParser",
     "HTMLParser",
     "HTMLToMarkdownParser",

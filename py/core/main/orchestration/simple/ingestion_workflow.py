@@ -8,6 +8,7 @@ from litellm import AuthenticationError
 from core.base import (
     DocumentChunk,
     GraphConstructionStatus,
+    GraphExtractionStatus,
     R2RException,
 )
 from core.utils import (
@@ -18,6 +19,7 @@ from core.utils import (
 )
 
 from ...services import IngestionService
+from ..hatchet.ingestion_workflow import should_skip_graph_extraction
 
 logger = logging.getLogger()
 
@@ -211,9 +213,32 @@ def simple_ingestion_factory(service: IngestionService):
 
             # Automatic extraction
             if service.providers.ingestion.config.automatic_extraction:
-                logger.warning(
-                    "Automatic extraction not yet implemented for `simple` ingestion workflows."
+                doc_type = document_info.document_type.value
+                skip_types = (
+                    service.providers.ingestion.config.skip_graph_extraction_for_types
                 )
+                skip_graph = should_skip_graph_extraction(
+                    doc_type=doc_type,
+                    skip_types=skip_types,
+                    ingestion_config=ingestion_config,
+                    document_id=str(document_info.id),
+                )
+
+                if not skip_graph:
+                    logger.warning(
+                        "Automatic extraction not yet implemented for `simple` "
+                        "ingestion workflows."
+                    )
+                else:
+                    # Mark extraction as complete when skipping
+                    await service.providers.database.documents_handler.set_workflow_status(
+                        id=document_info.id,
+                        status_type="extraction_status",
+                        status=GraphExtractionStatus.SUCCESS,
+                    )
+                    logger.info(
+                        f"Graph extraction skipped for document {document_info.id}"
+                    )
 
         except AuthenticationError as e:
             if document_info is not None:
