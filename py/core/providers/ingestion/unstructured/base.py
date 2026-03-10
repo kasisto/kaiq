@@ -3,7 +3,6 @@ import base64
 import json
 import logging
 import os
-import re
 import time
 from copy import copy
 from io import BytesIO
@@ -226,6 +225,22 @@ class UnstructuredIngestionProvider(IngestionProvider):
                         f"Parser {parser_name} for document type {doc_type} not found: {e}"
                     )
 
+    def _ensure_parser_initialized(self, parser_name: str, doc_type) -> str:
+        """Lazily initialize an extra parser if not already done."""
+        parser_key = f"{parser_name}_{str(doc_type)}"
+        if parser_key not in self.parsers:
+            if doc_type in self.EXTRA_PARSERS and parser_name in self.EXTRA_PARSERS[doc_type]:
+                self.parsers[parser_key] = self.EXTRA_PARSERS[doc_type][parser_name](
+                    config=self.config,
+                    database_provider=self.database_provider,
+                    llm_provider=self.llm_provider,
+                    ocr_provider=self.ocr_provider,
+                )
+                logger.info(
+                    f"Lazily initialized {parser_name} parser for {doc_type}"
+                )
+        return parser_key
+
     async def parse_fallback(
         self,
         file_content: bytes,
@@ -431,21 +446,9 @@ class UnstructuredIngestionProvider(IngestionProvider):
                     elements.append(element)
             elif parser_name == "semantic":
                 # Use semantic parser for XLSX/XLS files (LLM-based chunking)
-                parser_key = f"semantic_{str(document.document_type)}"
-                # Lazily initialize if not already done
-                if parser_key not in self.parsers:
-                    if document.document_type in self.EXTRA_PARSERS:
-                        parser_dict = self.EXTRA_PARSERS[document.document_type]
-                        if "semantic" in parser_dict:
-                            self.parsers[parser_key] = parser_dict["semantic"](
-                                config=self.config,
-                                database_provider=self.database_provider,
-                                llm_provider=self.llm_provider,
-                                ocr_provider=self.ocr_provider,
-                            )
-                            logger.info(
-                                f"Lazily initialized semantic parser for {document.document_type}"
-                            )
+                parser_key = self._ensure_parser_initialized(
+                    "semantic", document.document_type
+                )
                 if parser_key in self.parsers:
                     async for element in self.parse_fallback(
                         file_content,
@@ -455,21 +458,9 @@ class UnstructuredIngestionProvider(IngestionProvider):
                         elements.append(element)
             elif parser_name == "advanced":
                 # Use advanced parser for XLSX/XLS files (connected components)
-                parser_key = f"advanced_{str(document.document_type)}"
-                # Lazily initialize if not already done
-                if parser_key not in self.parsers:
-                    if document.document_type in self.EXTRA_PARSERS:
-                        parser_dict = self.EXTRA_PARSERS[document.document_type]
-                        if "advanced" in parser_dict:
-                            self.parsers[parser_key] = parser_dict["advanced"](
-                                config=self.config,
-                                database_provider=self.database_provider,
-                                llm_provider=self.llm_provider,
-                                ocr_provider=self.ocr_provider,
-                            )
-                            logger.info(
-                                f"Lazily initialized advanced parser for {document.document_type}"
-                            )
+                parser_key = self._ensure_parser_initialized(
+                    "advanced", document.document_type
+                )
                 if parser_key in self.parsers:
                     async for element in self.parse_fallback(
                         file_content,

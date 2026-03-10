@@ -51,8 +51,8 @@ class XLSXParserAdvanced(AsyncParser[str | bytes]):
     def __init__(
         self,
         config: IngestionConfig,
-        database_provider: DatabaseProvider,
-        llm_provider: CompletionProvider,
+        database_provider: DatabaseProvider = None,
+        llm_provider: CompletionProvider = None,
         ocr_provider=None,
     ):
         self.database_provider = database_provider

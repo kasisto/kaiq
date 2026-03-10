@@ -366,7 +366,7 @@ class XLSXSemanticParser(AsyncParser[str | bytes]):
             generation_config = GenerationConfig(
                 model=model,
                 temperature=0.1,  # Low temperature for consistent output
-                max_tokens_to_sample=500,
+                max_tokens_to_sample=1000,
             )
 
             # Use the injected LLM provider
