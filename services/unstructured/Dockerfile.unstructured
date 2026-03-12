@@ -15,12 +15,13 @@ ENV PYTHONUNBUFFERED=1
 
 WORKDIR /app
 
-RUN pip install --no-cache-dir unstructured "unstructured[all-docs]"
+RUN pip install --no-cache-dir uv
+RUN uv pip install --system --no-cache-dir unstructured "unstructured[all-docs]"
 
 
 RUN python -c "from unstructured.partition.model_init import initialize; initialize()"
 
-RUN pip install gunicorn uvicorn fastapi httpx
+RUN uv pip install --system gunicorn uvicorn fastapi httpx
 
 COPY main.py .
 
