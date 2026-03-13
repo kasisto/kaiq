@@ -16,6 +16,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 from core.base.abstractions import GenerationConfig, LLMChatCompletion
 from core.base.providers import IngestionConfig
+from core.base.providers.ingestion import SemanticParsingLimitExceeded
 from core.parsers.structured.xlsx_semantic_parser import (
     XLSXSemanticParser,
     XLSSemanticParser,
@@ -26,13 +27,24 @@ from core.parsers.structured.xlsx_semantic_parser import (
 def mock_ingestion_config():
     """Create a mock ingestion config."""
     config = MagicMock(spec=IngestionConfig)
+    config.max_pages = 30
+    config.max_chars_per_page = 50_000
     return config
 
 
 @pytest.fixture
 def mock_database_provider():
-    """Create a mock database provider."""
-    return MagicMock()
+    """Create a mock database provider.
+
+    prompts_handler.get_cached_prompt raises so _get_semantic_prompt falls back
+    to DEFAULT_SEMANTIC_PROMPT — required for test_content_truncation_for_llm to
+    receive a real string prompt containing the user-supplied content.
+    """
+    provider = MagicMock()
+    provider.prompts_handler.get_cached_prompt = AsyncMock(
+        side_effect=Exception("no prompt in mock")
+    )
+    return provider
 
 
 @pytest.fixture
@@ -182,7 +194,7 @@ class TestSemanticChunkGeneration:
 
         # Verify the call was made
         call_args = parser.llm_provider.aget_completion.call_args
-        messages = call_args.kwargs.get("messages", call_args.args[0])
+        messages = call_args.kwargs["messages"] if "messages" in call_args.kwargs else call_args.args[0]
         user_message = messages[1]["content"]
 
         # Should be truncated
@@ -369,6 +381,128 @@ class TestFullIngestion:
         with pytest.raises(ValueError, match="exceeds maximum"):
             async for _ in parser.ingest(oversized_data):
                 pass
+
+
+    @pytest.mark.asyncio
+    async def test_ingest_raises_limit_exceeded_for_too_many_sheets(self, parser):
+        """Test that SemanticParsingLimitExceeded is raised when sheet count exceeds max_pages."""
+        parser.config.max_pages = 2
+
+        mock_md_result = MagicMock()
+        mock_md_result.text_content = """## Sheet1
+
+| A | B |
+|---|---|
+| 1 | 2 |
+
+## Sheet2
+
+| C | D |
+|---|---|
+| 3 | 4 |
+
+## Sheet3
+
+| E | F |
+|---|---|
+| 5 | 6 |
+"""
+        mock_converter = MagicMock()
+        mock_converter.convert.return_value = mock_md_result
+
+        with patch.object(parser, "_md_converter", mock_converter):
+            with patch("tempfile.NamedTemporaryFile"):
+                with patch("os.path.exists", return_value=True):
+                    with patch("os.unlink"):
+                        with pytest.raises(SemanticParsingLimitExceeded) as exc_info:
+                            async for _ in parser.ingest(b"fake excel bytes"):
+                                pass
+
+        assert exc_info.value.markdown_content != ""
+        assert "sheets" in exc_info.value.reason
+        # Verify all sheet content is present in markdown passed to fallback
+        assert "Sheet1" in exc_info.value.markdown_content
+        assert "Sheet3" in exc_info.value.markdown_content
+
+    @pytest.mark.asyncio
+    async def test_ingest_raises_limit_exceeded_for_oversized_sheet(self, parser):
+        """Test that SemanticParsingLimitExceeded is raised when a sheet exceeds max_chars_per_page."""
+        parser.config.max_chars_per_page = 10
+
+        mock_md_result = MagicMock()
+        mock_md_result.text_content = """## BigSheet
+
+| Column1 | Column2 | Column3 |
+|---------|---------|---------|
+| This is a very large sheet that exceeds the character limit | value2 | value3 |
+"""
+        mock_converter = MagicMock()
+        mock_converter.convert.return_value = mock_md_result
+
+        with patch.object(parser, "_md_converter", mock_converter):
+            with patch("tempfile.NamedTemporaryFile"):
+                with patch("os.path.exists", return_value=True):
+                    with patch("os.unlink"):
+                        with pytest.raises(SemanticParsingLimitExceeded) as exc_info:
+                            async for _ in parser.ingest(b"fake excel bytes"):
+                                pass
+
+        assert "chars" in exc_info.value.reason
+        assert exc_info.value.markdown_content != ""
+        assert "BigSheet" in exc_info.value.markdown_content
+
+    @pytest.mark.asyncio
+    async def test_ingest_succeeds_at_exact_page_limit(self, parser):
+        """Exactly max_pages sheets should succeed without raising."""
+        parser.config.max_pages = 2
+
+        mock_md_result = MagicMock()
+        mock_md_result.text_content = """## Sheet1
+
+| A |
+|---|
+| 1 |
+
+## Sheet2
+
+| B |
+|---|
+| 2 |
+"""
+        mock_converter = MagicMock()
+        mock_converter.convert.return_value = mock_md_result
+
+        with patch.object(parser, "_md_converter", mock_converter):
+            with patch("tempfile.NamedTemporaryFile"):
+                with patch("os.path.exists", return_value=True):
+                    with patch("os.unlink"):
+                        # Should NOT raise — exactly at limit, not over
+                        try:
+                            async for _ in parser.ingest(b"fake excel bytes"):
+                                pass
+                        except SemanticParsingLimitExceeded:
+                            pytest.fail("SemanticParsingLimitExceeded raised at exact limit")
+
+    @pytest.mark.asyncio
+    async def test_ingest_succeeds_at_exact_char_limit(self, parser):
+        """Sheet content exactly at max_chars_per_page should not raise."""
+        content_at_limit = "x" * 10  # exactly 10 chars
+        parser.config.max_chars_per_page = 10
+
+        mock_md_result = MagicMock()
+        mock_md_result.text_content = f"## Sheet1\n\n{content_at_limit}\n"
+        mock_converter = MagicMock()
+        mock_converter.convert.return_value = mock_md_result
+
+        with patch.object(parser, "_md_converter", mock_converter):
+            with patch("tempfile.NamedTemporaryFile"):
+                with patch("os.path.exists", return_value=True):
+                    with patch("os.unlink"):
+                        try:
+                            async for _ in parser.ingest(b"fake excel bytes"):
+                                pass
+                        except SemanticParsingLimitExceeded:
+                            pytest.fail("SemanticParsingLimitExceeded raised at exact limit")
 
 
 class TestXLSSemanticParser:
