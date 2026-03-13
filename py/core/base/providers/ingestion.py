@@ -174,7 +174,12 @@ class IngestionConfig(ProviderConfig):
     )
     max_pages: int = Field(
         default_factory=lambda: IngestionConfig._defaults["max_pages"],
-        description="Max pages/sheets for semantic parsing; exceeding this triggers fallback to standard chunking",
+        description=(
+            "Max pages/sheets for semantic parsing; exceeding this triggers fallback to standard chunking. "
+            "Note: the XLSX_SEMANTIC_MAX_SHEETS env var (default 50) is a hard cap applied after this limit. "
+            "Setting max_pages above that value causes sheets beyond the env-var cap to be silently truncated "
+            "rather than triggering a full fallback."
+        ),
     )
     document_summary_max_length: int = Field(
         default_factory=lambda: IngestionConfig._defaults[

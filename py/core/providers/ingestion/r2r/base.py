@@ -22,8 +22,8 @@ from core.providers.llm import (
     OpenAICompletionProvider,
     R2RCompletionProvider,
 )
-from core.providers.ocr import MistralOCRProvider
 from core.base.providers.ingestion import SemanticParsingLimitExceeded
+from core.providers.ocr import MistralOCRProvider
 from core.utils import generate_extraction_id
 from core.utils.semantic_metadata import parse_semantic_metadata
 

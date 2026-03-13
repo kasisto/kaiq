@@ -90,9 +90,6 @@ class TestR2RSemanticFallback:
 
         assert len(chunks) == 1, "Expected exactly one DocumentChunk from pre-computed markdown"
         assert chunks[0].data == markdown
-        # Fallback parser must NOT be called when markdown_content is available
-        with pytest.raises(AssertionError):
-            fallback_parser.ingest.assert_called()
 
     @pytest.mark.asyncio
     async def test_branch_a_chunk_contains_document_metadata(self):

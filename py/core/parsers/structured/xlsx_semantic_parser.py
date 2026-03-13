@@ -28,7 +28,7 @@ import logging
 import os
 import re
 import tempfile
-from typing import AsyncGenerator, Any
+from typing import Any, AsyncGenerator
 
 from core.base.abstractions import GenerationConfig
 from core.base.parsers.base_parser import AsyncParser

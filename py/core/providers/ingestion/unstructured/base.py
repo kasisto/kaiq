@@ -22,9 +22,8 @@ from core.base import (
     RecursiveCharacterTextSplitter,
 )
 from core.base.abstractions import R2RSerializable
-from core.base.providers.ingestion import IngestionConfig, IngestionProvider
+from core.base.providers.ingestion import IngestionConfig, IngestionProvider, SemanticParsingLimitExceeded
 from core.providers.ocr import MistralOCRProvider
-from core.base.providers.ingestion import SemanticParsingLimitExceeded
 from core.utils import generate_extraction_id
 from core.utils.semantic_metadata import parse_semantic_metadata
 
