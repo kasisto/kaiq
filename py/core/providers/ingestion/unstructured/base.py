@@ -24,9 +24,7 @@ from core.base import (
 from core.base.abstractions import R2RSerializable
 from core.base.providers.ingestion import IngestionConfig, IngestionProvider
 from core.providers.ocr import MistralOCRProvider
-from core.parsers.structured.xlsx_semantic_parser import (
-    SemanticParsingLimitExceeded,
-)
+from core.base.providers.ingestion import SemanticParsingLimitExceeded
 from core.utils import generate_extraction_id
 from core.utils.semantic_metadata import parse_semantic_metadata
 
@@ -452,13 +450,11 @@ class UnstructuredIngestionProvider(IngestionProvider):
                         )
                         if e.markdown_content:
                             # Use pre-computed markdown, chunk it inline
+                            _chunk_size = ingestion_config["new_after_n_chars"]
+                            _chunk_overlap = ingestion_config.get("overlap", 1024)
                             splitter = RecursiveCharacterTextSplitter(
-                                chunk_size=ingestion_config.get(
-                                    "new_after_n_chars", 2048
-                                ),
-                                chunk_overlap=ingestion_config.get(
-                                    "overlap", 1024
-                                ),
+                                chunk_size=_chunk_size,
+                                chunk_overlap=_chunk_overlap,
                             )
                             loop = asyncio.get_running_loop()
                             chunks = await loop.run_in_executor(
@@ -478,7 +474,7 @@ class UnstructuredIngestionProvider(IngestionProvider):
                             async for element in self.parse_fallback(
                                 file_content,
                                 ingestion_config=ingestion_config,
-                                parser_name=document.document_type,
+                                parser_name=document.document_type.value,
                             ):
                                 elements.append(element)
             elif parser_name == "advanced":
@@ -501,7 +497,7 @@ class UnstructuredIngestionProvider(IngestionProvider):
             async for element in self.parse_fallback(
                 file_content,
                 ingestion_config=ingestion_config,
-                parser_name=document.document_type,
+                parser_name=document.document_type.value,
             ):
                 elements.append(element)
         else:

@@ -16,6 +16,22 @@ if TYPE_CHECKING:
     from core.providers.database import PostgresDatabaseProvider
 
 
+class SemanticParsingLimitExceeded(Exception):
+    """Raised when a document exceeds semantic parsing limits.
+
+    Signals the ingestion provider to fall back to traditional
+    chunking and embedding instead of semantic parsing.
+
+    Carries pre-computed markdown content so the fallback path
+    can skip re-parsing the raw bytes.
+    """
+
+    def __init__(self, reason: str, markdown_content: str = ""):
+        self.reason = reason
+        self.markdown_content = markdown_content
+        super().__init__(reason)
+
+
 class ChunkingStrategy(str, Enum):
     RECURSIVE = "recursive"
     CHARACTER = "character"

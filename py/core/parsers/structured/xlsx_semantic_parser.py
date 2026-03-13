@@ -37,27 +37,15 @@ from core.base.providers import (
     DatabaseProvider,
     IngestionConfig,
 )
+from core.base.providers.ingestion import SemanticParsingLimitExceeded
 
 logger = logging.getLogger(__name__)
 
 
-class SemanticParsingLimitExceeded(Exception):
-    """Raised when a document exceeds semantic parsing limits.
-
-    Signals the ingestion provider to fall back to traditional
-    chunking and embedding instead of semantic parsing.
-
-    Carries pre-computed markdown content so the fallback path
-    can skip re-parsing the raw bytes.
-    """
-
-    def __init__(self, reason: str, markdown_content: str = ""):
-        self.reason = reason
-        self.markdown_content = markdown_content
-        super().__init__(reason)
-
-
 # Maximum number of sheets to process (LLM cost control)
+# Hard cap on sheet truncation: activates only when max_pages (IngestionConfig) exceeds this value.
+# With default max_pages=30, SemanticParsingLimitExceeded fires first for >30 sheets,
+# so truncation here is unreachable in default config.
 MAX_SHEETS_PER_FILE = int(os.getenv("XLSX_SEMANTIC_MAX_SHEETS", "50"))
 
 # Maximum file size in bytes (100MB default) to prevent memory issues
@@ -247,8 +235,8 @@ class XLSXSemanticParser(AsyncParser[str | bytes]):
         logger.info(f"XLSXSemanticParser: Processing {total_sheets} sheets")
 
         # Check config-based limits (max_pages and max_chars_per_page)
-        max_pages = getattr(self.config, "max_pages", 30)
-        max_chars_per_page = getattr(self.config, "max_chars_per_page", 50_000)
+        max_pages = self.config.max_pages
+        max_chars_per_page = self.config.max_chars_per_page
 
         if total_sheets > max_pages:
             raise SemanticParsingLimitExceeded(

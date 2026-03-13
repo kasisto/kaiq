@@ -117,3 +117,16 @@ class TestShouldSkipGraphExtraction:
             document_id="test-doc-10",
         )
         assert result is True
+
+    def test_semantic_parser_with_manual_skip_still_skips(self):
+        """Manual skip_graph_extraction=True skips even when semantic parser is configured."""
+        result = should_skip_graph_extraction(
+            doc_type="xlsx",
+            skip_types=[],  # No auto-skip for xlsx
+            ingestion_config={
+                "skip_graph_extraction": True,
+                "extra_parsers": {"xlsx": ["semantic"]},
+            },
+            document_id="test-doc-11",
+        )
+        assert result is True

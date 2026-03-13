@@ -23,9 +23,7 @@ from core.providers.llm import (
     R2RCompletionProvider,
 )
 from core.providers.ocr import MistralOCRProvider
-from core.parsers.structured.xlsx_semantic_parser import (
-    SemanticParsingLimitExceeded,
-)
+from core.base.providers.ingestion import SemanticParsingLimitExceeded
 from core.utils import generate_extraction_id
 from core.utils.semantic_metadata import parse_semantic_metadata
 
