@@ -24,6 +24,9 @@ from core.base import (
 from core.base.abstractions import R2RSerializable
 from core.base.providers.ingestion import IngestionConfig, IngestionProvider
 from core.providers.ocr import MistralOCRProvider
+from core.parsers.structured.xlsx_semantic_parser import (
+    SemanticParsingLimitExceeded,
+)
 from core.utils import generate_extraction_id
 from core.utils.semantic_metadata import parse_semantic_metadata
 
@@ -434,12 +437,50 @@ class UnstructuredIngestionProvider(IngestionProvider):
                     "semantic", document.document_type
                 )
                 if parser_key in self.parsers:
-                    async for element in self.parse_fallback(
-                        file_content,
-                        ingestion_config=ingestion_config,
-                        parser_name=parser_key,
-                    ):
-                        elements.append(element)
+                    try:
+                        async for element in self.parse_fallback(
+                            file_content,
+                            ingestion_config=ingestion_config,
+                            parser_name=parser_key,
+                        ):
+                            elements.append(element)
+                    except SemanticParsingLimitExceeded as e:
+                        logger.warning(
+                            f"Semantic parsing limit exceeded for "
+                            f"document {document.id}: {e.reason}. "
+                            f"Falling back to standard parsing."
+                        )
+                        if e.markdown_content:
+                            # Use pre-computed markdown, chunk it inline
+                            splitter = RecursiveCharacterTextSplitter(
+                                chunk_size=ingestion_config.get(
+                                    "new_after_n_chars", 2048
+                                ),
+                                chunk_overlap=ingestion_config.get(
+                                    "overlap", 1024
+                                ),
+                            )
+                            loop = asyncio.get_running_loop()
+                            chunks = await loop.run_in_executor(
+                                None,
+                                splitter.create_documents,
+                                [e.markdown_content],
+                            )
+                            for i, chunk in enumerate(chunks):
+                                elements.append(
+                                    FallbackElement(
+                                        text=chunk.page_content,
+                                        metadata={"chunk_id": i},
+                                    )
+                                )
+                        else:
+                            # Fallback: re-parse from raw bytes
+                            async for element in self.parse_fallback(
+                                file_content,
+                                ingestion_config=ingestion_config,
+                                parser_name=document.document_type,
+                            ):
+                                elements.append(element)
             elif parser_name == "advanced":
                 # Use advanced parser for XLSX/XLS files (connected components)
                 parser_key = self._ensure_parser_initialized(

@@ -11,7 +11,11 @@ from .rst_parser import RSTParser
 from .tsv_parser import TSVParser
 from .xls_parser import XLSParser
 from .xlsx_parser import XLSXParser, XLSXParserAdvanced
-from .xlsx_semantic_parser import XLSSemanticParser, XLSXSemanticParser
+from .xlsx_semantic_parser import (
+    SemanticParsingLimitExceeded,
+    XLSSemanticParser,
+    XLSXSemanticParser,
+)
 
 __all__ = [
     "CSVParser",
@@ -30,4 +34,5 @@ __all__ = [
     "XLSXParserAdvanced",
     "XLSXSemanticParser",
     "XLSSemanticParser",
+    "SemanticParsingLimitExceeded",
 ]

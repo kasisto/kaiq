@@ -32,6 +32,7 @@ __all__ = [
     "XLSXParserAdvanced",
     "XLSXSemanticParser",
     "XLSSemanticParser",
+    "SemanticParsingLimitExceeded",
     "MDParser",
     "HTMLParser",
     "HTMLToMarkdownParser",

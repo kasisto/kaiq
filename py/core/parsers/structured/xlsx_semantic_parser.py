@@ -40,6 +40,23 @@ from core.base.providers import (
 
 logger = logging.getLogger(__name__)
 
+
+class SemanticParsingLimitExceeded(Exception):
+    """Raised when a document exceeds semantic parsing limits.
+
+    Signals the ingestion provider to fall back to traditional
+    chunking and embedding instead of semantic parsing.
+
+    Carries pre-computed markdown content so the fallback path
+    can skip re-parsing the raw bytes.
+    """
+
+    def __init__(self, reason: str, markdown_content: str = ""):
+        self.reason = reason
+        self.markdown_content = markdown_content
+        super().__init__(reason)
+
+
 # Maximum number of sheets to process (LLM cost control)
 MAX_SHEETS_PER_FILE = int(os.getenv("XLSX_SEMANTIC_MAX_SHEETS", "50"))
 
@@ -228,6 +245,33 @@ class XLSXSemanticParser(AsyncParser[str | bytes]):
 
         total_sheets = len(sheets)
         logger.info(f"XLSXSemanticParser: Processing {total_sheets} sheets")
+
+        # Check config-based limits (max_pages and max_chars_per_page)
+        max_pages = getattr(self.config, "max_pages", 30)
+        max_chars_per_page = getattr(self.config, "max_chars_per_page", 50_000)
+
+        if total_sheets > max_pages:
+            raise SemanticParsingLimitExceeded(
+                reason=(
+                    f"Document has {total_sheets} sheets, exceeds "
+                    f"max_pages={max_pages}. Falling back to regular parsing."
+                ),
+                # Pass full markdown so the fallback indexes all sheets via
+                # standard chunking without re-parsing bytes. max_pages only
+                # gates semantic (LLM) processing, not content indexing.
+                markdown_content=markdown_content,
+            )
+
+        for sheet_name, sheet_content in sheets.items():
+            if len(sheet_content) > max_chars_per_page:
+                raise SemanticParsingLimitExceeded(
+                    reason=(
+                        f"Sheet '{sheet_name}' has {len(sheet_content)} chars, "
+                        f"exceeds max_chars_per_page={max_chars_per_page}. "
+                        f"Falling back to regular parsing."
+                    ),
+                    markdown_content=markdown_content,
+                )
 
         if total_sheets > MAX_SHEETS_PER_FILE:
             logger.warning(

@@ -23,6 +23,9 @@ from core.providers.llm import (
     R2RCompletionProvider,
 )
 from core.providers.ocr import MistralOCRProvider
+from core.parsers.structured.xlsx_semantic_parser import (
+    SemanticParsingLimitExceeded,
+)
 from core.utils import generate_extraction_id
 from core.utils.semantic_metadata import parse_semantic_metadata
 
@@ -333,56 +336,86 @@ class R2RIngestionProvider(IngestionProvider):
                         "semantic", document.document_type
                     )
                     if parser_key in self.parsers:
-                        iteration = 0
-                        async for chunk in self.parsers[parser_key].ingest(
-                            file_content, **ingestion_config_override
-                        ):
-                            chunk_text = chunk.get("content") if isinstance(chunk, dict) else chunk
-                            if not chunk_text:
-                                continue
+                        try:
+                            iteration = 0
+                            async for chunk in self.parsers[parser_key].ingest(
+                                file_content, **ingestion_config_override
+                            ):
+                                chunk_text = (
+                                    chunk.get("content")
+                                    if isinstance(chunk, dict)
+                                    else chunk
+                                )
+                                if not chunk_text:
+                                    continue
 
-                            # Parse embedded metadata from semantic parser output
-                            chunk_text, semantic_metadata = parse_semantic_metadata(
-                                chunk_text
+                                chunk_text, semantic_metadata = (
+                                    parse_semantic_metadata(chunk_text)
+                                )
+
+                                has_page_content = bool(
+                                    semantic_metadata.get("page_content")
+                                )
+                                metadata = {
+                                    **document.metadata,
+                                    "chunk_order": iteration,
+                                    "chunker_type": semantic_metadata.get(
+                                        "chunker_type", "xlsx_semantic"
+                                    ),
+                                    "use_page_content": semantic_metadata.get(
+                                        "use_page_content", has_page_content
+                                    ),
+                                    "page_title": semantic_metadata.get(
+                                        "page_title", ""
+                                    ),
+                                }
+
+                                if semantic_metadata.get("page_content"):
+                                    metadata["page_content"] = (
+                                        semantic_metadata["page_content"]
+                                    )
+
+                                yield DocumentChunk(
+                                    id=generate_extraction_id(
+                                        document.id, iteration
+                                    ),
+                                    document_id=document.id,
+                                    owner_id=document.owner_id,
+                                    collection_ids=document.collection_ids,
+                                    data=chunk_text,
+                                    metadata=metadata,
+                                )
+                                iteration += 1
+
+                            if iteration > 0:
+                                logger.debug(
+                                    f"Parsed semantic Excel document with "
+                                    f"id={document.id}, into {iteration} "
+                                    f"semantic chunks in "
+                                    f"t={time.time() - t0:.2f} seconds."
+                                )
+                                return
+                        except SemanticParsingLimitExceeded as e:
+                            logger.warning(
+                                f"Semantic parsing limit exceeded for "
+                                f"document {document.id}: {e.reason}. "
+                                f"Falling back to standard parsing."
                             )
-
-                            # Build metadata with semantic parser fields
-                            metadata = {
-                                **document.metadata,
-                                "chunk_order": iteration,
-                                "chunker_type": semantic_metadata.get(
-                                    "chunker_type", "xlsx_semantic"
-                                ),
-                                "use_page_content": semantic_metadata.get(
-                                    "use_page_content", True
-                                ),
-                                "page_title": semantic_metadata.get(
-                                    "page_title", ""
-                                ),
-                            }
-
-                            # Store page_content in metadata for retrieval enrichment
-                            if semantic_metadata.get("page_content"):
-                                metadata["page_content"] = semantic_metadata[
-                                    "page_content"
-                                ]
-
-                            yield DocumentChunk(
-                                id=generate_extraction_id(document.id, iteration),
-                                document_id=document.id,
-                                owner_id=document.owner_id,
-                                collection_ids=document.collection_ids,
-                                data=chunk_text,
-                                metadata=metadata,
-                            )
-                            iteration += 1
-
-                        if iteration > 0:
-                            logger.debug(
-                                f"Parsed semantic Excel document with id={document.id}, "
-                                f"into {iteration} semantic chunks in t={time.time() - t0:.2f} seconds."
-                            )
-                            return
+                            if e.markdown_content:
+                                # Use pre-computed markdown (avoids re-parsing)
+                                contents.append(
+                                    {"content": e.markdown_content}
+                                )
+                            else:
+                                # Fallback: re-parse from raw bytes
+                                async for text in self.parsers[
+                                    document.document_type
+                                ].ingest(
+                                    file_content,
+                                    **ingestion_config_override,
+                                ):
+                                    if text is not None:
+                                        contents.append({"content": text})
 
                 # Handle advanced parser for XLSX/XLS files
                 elif override_parser_name == "advanced":

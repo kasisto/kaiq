@@ -2,8 +2,7 @@
 Unit tests for should_skip_graph_extraction function.
 
 Tests cover all branching paths:
-- Raw Excel in skip list -> skip
-- Semantic Excel in skip list -> don't skip
+- Excel (xlsx/xls) in skip list -> always skip
 - PDF not in skip list -> don't skip
 - Manual skip override -> skip
 - Both conditions -> skip
@@ -19,8 +18,8 @@ from core.main.orchestration.hatchet.ingestion_workflow import (
 class TestShouldSkipGraphExtraction:
     """Tests for the should_skip_graph_extraction helper function."""
 
-    def test_raw_xlsx_in_skip_list_returns_true(self):
-        """Raw xlsx in skip_types should be skipped."""
+    def test_xlsx_in_skip_list_returns_true(self):
+        """xlsx in skip_types should always be skipped."""
         result = should_skip_graph_extraction(
             doc_type="xlsx",
             skip_types=["xlsx", "xls"],
@@ -29,15 +28,15 @@ class TestShouldSkipGraphExtraction:
         )
         assert result is True
 
-    def test_semantic_xlsx_in_skip_list_returns_false(self):
-        """Semantic xlsx in skip_types should NOT be skipped."""
+    def test_xlsx_with_parser_overrides_still_skips(self):
+        """xlsx in skip_types should be skipped regardless of parser config."""
         result = should_skip_graph_extraction(
             doc_type="xlsx",
             skip_types=["xlsx", "xls"],
             ingestion_config={"parser_overrides": {"xlsx": "semantic"}},
             document_id="test-doc-2",
         )
-        assert result is False
+        assert result is True
 
     def test_pdf_not_in_skip_list_returns_false(self):
         """PDF not in skip_types should NOT be skipped."""
@@ -89,8 +88,8 @@ class TestShouldSkipGraphExtraction:
         )
         assert result is True
 
-    def test_missing_parser_overrides_key(self):
-        """Missing parser_overrides key should default to empty dict."""
+    def test_irrelevant_config_keys_ignored(self):
+        """Irrelevant ingestion_config keys should not affect skip logic."""
         result = should_skip_graph_extraction(
             doc_type="xlsx",
             skip_types=["xlsx"],
@@ -99,12 +98,12 @@ class TestShouldSkipGraphExtraction:
         )
         assert result is True
 
-    def test_advanced_parser_override_still_skips(self):
-        """Non-semantic parser override should still skip."""
+    def test_xlsx_with_extra_parsers_still_skips(self):
+        """xlsx in skip_types should be skipped regardless of extra_parsers."""
         result = should_skip_graph_extraction(
             doc_type="xlsx",
-            skip_types=["xlsx"],
-            ingestion_config={"parser_overrides": {"xlsx": "advanced"}},
+            skip_types=["xlsx", "xls"],
+            ingestion_config={"extra_parsers": {"xlsx": ["semantic"]}},
             document_id="test-doc-9",
         )
         assert result is True
@@ -116,40 +115,5 @@ class TestShouldSkipGraphExtraction:
             skip_types=["xlsx"],
             ingestion_config={"skip_graph_extraction": False},
             document_id="test-doc-10",
-        )
-        # Auto-skip still applies because xlsx is in skip_types and no semantic parser
-        assert result is True
-
-    def test_semantic_parser_with_manual_skip_still_skips(self):
-        """Manual skip should override semantic parser allowance."""
-        result = should_skip_graph_extraction(
-            doc_type="xlsx",
-            skip_types=["xlsx"],
-            ingestion_config={
-                "parser_overrides": {"xlsx": "semantic"},
-                "skip_graph_extraction": True,
-            },
-            document_id="test-doc-11",
-        )
-        # Manual skip takes precedence
-        assert result is True
-
-    def test_semantic_via_extra_parsers_returns_false(self):
-        """Semantic xlsx via extra_parsers config should NOT be skipped."""
-        result = should_skip_graph_extraction(
-            doc_type="xlsx",
-            skip_types=["xlsx", "xls"],
-            ingestion_config={"extra_parsers": {"xlsx": ["semantic"]}},
-            document_id="test-doc-12",
-        )
-        assert result is False
-
-    def test_non_semantic_extra_parser_still_skips(self):
-        """Non-semantic extra_parser should still skip."""
-        result = should_skip_graph_extraction(
-            doc_type="xlsx",
-            skip_types=["xlsx"],
-            ingestion_config={"extra_parsers": {"xlsx": ["advanced"]}},
-            document_id="test-doc-13",
         )
         assert result is True

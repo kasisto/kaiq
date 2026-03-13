@@ -50,6 +50,8 @@ class IngestionConfig(ProviderConfig):
         "automatic_extraction": False,
         "skip_graph_extraction_for_types": ["xlsx", "xls"],
         "skip_graph_extraction": False,
+        "max_chars_per_page": 50_000,
+        "max_pages": 30,
         "enable_html_css_heading_mappings": True,
         "html_css_heading_mappings": {},
     }
@@ -140,13 +142,23 @@ class IngestionConfig(ProviderConfig):
         default_factory=lambda: IngestionConfig._defaults[
             "skip_graph_extraction_for_types"
         ],
-        description="Document types to auto-skip graph extraction for (unless using semantic parser)",
+        description="Document types to always auto-skip graph extraction for",
     )
     skip_graph_extraction: bool = Field(
         default_factory=lambda: IngestionConfig._defaults[
             "skip_graph_extraction"
         ],
         description="Manual override to skip graph extraction for this document",
+    )
+    max_chars_per_page: int = Field(
+        default_factory=lambda: IngestionConfig._defaults[
+            "max_chars_per_page"
+        ],
+        description="Max characters per page/sheet for semantic parsing; exceeding this triggers fallback to standard chunking",
+    )
+    max_pages: int = Field(
+        default_factory=lambda: IngestionConfig._defaults["max_pages"],
+        description="Max pages/sheets for semantic parsing; exceeding this triggers fallback to standard chunking",
     )
     document_summary_max_length: int = Field(
         default_factory=lambda: IngestionConfig._defaults[
