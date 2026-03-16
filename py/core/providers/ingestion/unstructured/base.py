@@ -449,8 +449,8 @@ class UnstructuredIngestionProvider(IngestionProvider):
                         )
                         if e.markdown_content:
                             # Use pre-computed markdown, chunk it inline
-                            _chunk_size = ingestion_config["new_after_n_chars"]
-                            _chunk_overlap = ingestion_config.get("overlap", 1024)
+                            _chunk_size = ingestion_config.get("new_after_n_chars", 1500)
+                            _chunk_overlap = ingestion_config.get("overlap", 64)
                             splitter = RecursiveCharacterTextSplitter(
                                 chunk_size=_chunk_size,
                                 chunk_overlap=_chunk_overlap,
