@@ -16,6 +16,22 @@ if TYPE_CHECKING:
     from core.providers.database import PostgresDatabaseProvider
 
 
+class SemanticParsingLimitExceeded(Exception):
+    """Raised when a document exceeds semantic parsing limits.
+
+    Signals the ingestion provider to fall back to traditional
+    chunking and embedding instead of semantic parsing.
+
+    Carries pre-computed markdown content so the fallback path
+    can skip re-parsing the raw bytes.
+    """
+
+    def __init__(self, reason: str, markdown_content: str = ""):
+        self.reason = reason
+        self.markdown_content = markdown_content
+        super().__init__(reason)
+
+
 class ChunkingStrategy(str, Enum):
     RECURSIVE = "recursive"
     CHARACTER = "character"
@@ -50,6 +66,8 @@ class IngestionConfig(ProviderConfig):
         "automatic_extraction": False,
         "skip_graph_extraction_for_types": ["xlsx", "xls"],
         "skip_graph_extraction": False,
+        "max_chars_per_page": 50_000,
+        "max_pages": 30,
         "enable_html_css_heading_mappings": True,
         "html_css_heading_mappings": {},
     }
@@ -140,13 +158,28 @@ class IngestionConfig(ProviderConfig):
         default_factory=lambda: IngestionConfig._defaults[
             "skip_graph_extraction_for_types"
         ],
-        description="Document types to auto-skip graph extraction for (unless using semantic parser)",
+        description="Document types to always auto-skip graph extraction for",
     )
     skip_graph_extraction: bool = Field(
         default_factory=lambda: IngestionConfig._defaults[
             "skip_graph_extraction"
         ],
         description="Manual override to skip graph extraction for this document",
+    )
+    max_chars_per_page: int = Field(
+        default_factory=lambda: IngestionConfig._defaults[
+            "max_chars_per_page"
+        ],
+        description="Max characters per page/sheet for semantic parsing; exceeding this triggers fallback to standard chunking",
+    )
+    max_pages: int = Field(
+        default_factory=lambda: IngestionConfig._defaults["max_pages"],
+        description=(
+            "Max pages/sheets for semantic parsing; exceeding this triggers fallback to standard chunking. "
+            "Note: the XLSX_SEMANTIC_MAX_SHEETS env var (default 50) is a hard cap applied after this limit. "
+            "Setting max_pages above that value causes sheets beyond the env-var cap to be silently truncated "
+            "rather than triggering a full fallback."
+        ),
     )
     document_summary_max_length: int = Field(
         default_factory=lambda: IngestionConfig._defaults[

@@ -28,7 +28,7 @@ import logging
 import os
 import re
 import tempfile
-from typing import AsyncGenerator, Any
+from typing import Any, AsyncGenerator
 
 from core.base.abstractions import GenerationConfig
 from core.base.parsers.base_parser import AsyncParser
@@ -37,10 +37,15 @@ from core.base.providers import (
     DatabaseProvider,
     IngestionConfig,
 )
+from core.base.providers.ingestion import SemanticParsingLimitExceeded
 
 logger = logging.getLogger(__name__)
 
+
 # Maximum number of sheets to process (LLM cost control)
+# Hard cap on sheet truncation: activates only when max_pages (IngestionConfig) exceeds this value.
+# With default max_pages=30, SemanticParsingLimitExceeded fires first for >30 sheets,
+# so truncation here is unreachable in default config.
 MAX_SHEETS_PER_FILE = int(os.getenv("XLSX_SEMANTIC_MAX_SHEETS", "50"))
 
 # Maximum file size in bytes (100MB default) to prevent memory issues
@@ -228,6 +233,33 @@ class XLSXSemanticParser(AsyncParser[str | bytes]):
 
         total_sheets = len(sheets)
         logger.info(f"XLSXSemanticParser: Processing {total_sheets} sheets")
+
+        # Check config-based limits (max_pages and max_chars_per_page)
+        max_pages = self.config.max_pages
+        max_chars_per_page = self.config.max_chars_per_page
+
+        if total_sheets > max_pages:
+            raise SemanticParsingLimitExceeded(
+                reason=(
+                    f"Document has {total_sheets} sheets, exceeds "
+                    f"max_pages={max_pages}. Falling back to regular parsing."
+                ),
+                # Pass full markdown so the fallback indexes all sheets via
+                # standard chunking without re-parsing bytes. max_pages only
+                # gates semantic (LLM) processing, not content indexing.
+                markdown_content=markdown_content,
+            )
+
+        for sheet_name, sheet_content in sheets.items():
+            if len(sheet_content) > max_chars_per_page:
+                raise SemanticParsingLimitExceeded(
+                    reason=(
+                        f"Sheet '{sheet_name}' has {len(sheet_content)} chars, "
+                        f"exceeds max_chars_per_page={max_chars_per_page}. "
+                        f"Falling back to regular parsing."
+                    ),
+                    markdown_content=markdown_content,
+                )
 
         if total_sheets > MAX_SHEETS_PER_FILE:
             logger.warning(
