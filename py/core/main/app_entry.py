@@ -8,8 +8,16 @@ from fastapi import FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 
+import litellm
+
 from core.base import R2RException
 from core.utils.logging_config import configure_logging
+
+# Disable aiohttp transport in litellm to prevent session leaks.
+# LiteLLM >= 1.74.15 uses aiohttp by default and creates ClientSession objects
+# that are never closed, causing CLOSE_WAIT connection accumulation.
+# See: https://github.com/BerriAI/litellm/issues/13251
+litellm.disable_aiohttp_transport = True
 
 from .app import R2RApp
 from .assembly import R2RBuilder, R2RConfig
