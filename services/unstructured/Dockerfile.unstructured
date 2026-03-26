@@ -5,7 +5,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     gcc g++ musl-dev curl libffi-dev gfortran libopenblas-dev \
     tesseract-ocr libtesseract-dev libleptonica-dev pkg-config \
     poppler-utils libmagic1 pandoc libreoffice \
-    libgl1-mesa-glx libglib2.0-0 \
+    libgl1 libglib2.0-0 \
     && apt-get clean && rm -rf /var/lib/apt/lists/*
 
 ENV TESSDATA_PREFIX=/usr/share/tesseract-ocr/5/tessdata
@@ -15,16 +15,13 @@ ENV PYTHONUNBUFFERED=1
 
 WORKDIR /app
 
-RUN pip install --no-cache-dir unstructured "unstructured[all-docs]"
+RUN pip install --no-cache-dir uv
+RUN uv pip install --system --no-cache-dir unstructured "unstructured[all-docs]"
 
-
-ENV NLTK_DATA=/usr/share/nltk_data
-RUN mkdir -p ${NLTK_DATA}
-RUN python -m nltk.downloader -d ${NLTK_DATA} punkt_tab averaged_perceptron_tagger_eng
 
 RUN python -c "from unstructured.partition.model_init import initialize; initialize()"
 
-RUN pip install gunicorn uvicorn fastapi httpx
+RUN uv pip install --system gunicorn uvicorn fastapi httpx
 
 COPY main.py .
 
