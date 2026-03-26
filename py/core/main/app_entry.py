@@ -44,7 +44,17 @@ async def lifespan(app: FastAPI):
 
     yield
 
-    # # Shutdown
+    # Shutdown — close provider HTTP clients and DB pools to prevent connection leaks
+    if hasattr(r2r_app, 'providers'):
+        for name in ('ingestion', 'embedding', 'database'):
+            provider = getattr(r2r_app.providers, name, None)
+            if provider and hasattr(provider, 'close'):
+                try:
+                    await provider.close()
+                    logging.info("Closed %s provider", name)
+                except Exception as e:
+                    logging.warning("Error closing %s provider: %s", name, e)
+
     scheduler.shutdown()
 
 

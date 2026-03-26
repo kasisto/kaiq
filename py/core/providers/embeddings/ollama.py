@@ -42,6 +42,12 @@ class OllamaEmbeddingProvider(EmbeddingProvider):
 
         self.batch_size = config.batch_size or 32
 
+    async def close(self) -> None:
+        """Close underlying HTTP clients."""
+        if hasattr(self.aclient, '_client') and hasattr(self.aclient._client, 'aclose'):
+            await self.aclient._client.aclose()
+            logger.info("OllamaEmbeddingProvider async client closed")
+
     def _get_embedding_kwargs(self, **kwargs):
         embedding_kwargs = {
             "model": self.base_model,

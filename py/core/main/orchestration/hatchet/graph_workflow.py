@@ -1,6 +1,7 @@
 # type: ignore
 import asyncio
 import contextlib
+import os
 import json
 import logging
 import math
@@ -183,8 +184,11 @@ def hatchet_graph_search_results_factory(
                             key=str(document_id),
                         )
                     )
-                # Wait for all workflows to complete
-                results = await asyncio.gather(*workflows)
+                # Wait for all workflows to complete (tolerate individual failures)
+                results = await asyncio.gather(*workflows, return_exceptions=True)
+                for i, r in enumerate(results):
+                    if isinstance(r, Exception):
+                        logger.error("Graph extraction workflow %d failed: %s", i, r)
                 return {
                     "result": f"successfully submitted graph_search_results relationships extraction for document {document_id}",
                     "document_id": str(collection_id),
@@ -250,7 +254,10 @@ def hatchet_graph_search_results_factory(
                     )
                 ).result()
 
-                await asyncio.gather(extract_result)
+                await asyncio.wait_for(
+                    asyncio.gather(extract_result),
+                    timeout=float(os.environ.get("GRAPH_DEDUP_TIMEOUT", "3600")),
+                )
 
             return {
                 "result": f"successfully ran graph_search_results entity description for document {document_id}"
@@ -396,9 +403,14 @@ def hatchet_graph_search_results_factory(
                     ).result()
                 )
 
-            results = await asyncio.gather(*workflows)
+            results = await asyncio.gather(*workflows, return_exceptions=True)
+            failed = [r for r in results if isinstance(r, Exception)]
+            if failed:
+                logger.error("Community summary: %d/%d workflows failed", len(failed), len(results))
+                for f in failed:
+                    logger.error("Community summary workflow error: %s", f)
             logger.info(
-                f"Completed {len(results)} community summary workflows"
+                f"Completed {len(results) - len(failed)}/{len(results)} community summary workflows"
             )
 
             # Update statuses

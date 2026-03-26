@@ -182,10 +182,26 @@ class UnstructuredIngestionProvider(IngestionProvider):
                     "UNSTRUCTURED_SERVICE_URL environment variable is not set"
                 ) from e
 
-            self.client = httpx.AsyncClient()
+            max_conn = int(os.environ.get("UNSTRUCTURED_MAX_CONNECTIONS", "20"))
+            max_keepalive = int(os.environ.get("UNSTRUCTURED_MAX_KEEPALIVE", "5"))
+            keepalive_expiry = int(os.environ.get("UNSTRUCTURED_KEEPALIVE_EXPIRY", "30"))
+            self.client = httpx.AsyncClient(
+                timeout=httpx.Timeout(3600, connect=30),
+                limits=httpx.Limits(
+                    max_connections=max_conn,
+                    max_keepalive_connections=max_keepalive,
+                    keepalive_expiry=keepalive_expiry,
+                ),
+            )
 
         self.parsers: dict[DocumentType, AsyncParser] = {}
         self._initialize_parsers()
+
+    async def close(self) -> None:
+        """Close the HTTP client and release connections."""
+        if isinstance(self.client, httpx.AsyncClient):
+            await self.client.aclose()
+            logger.info("UnstructuredIngestionProvider HTTP client closed")
 
     def _initialize_parsers(self):
         for doc_type, parsers in self.R2R_FALLBACK_PARSERS.items():
