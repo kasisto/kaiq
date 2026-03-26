@@ -1,4 +1,6 @@
-FROM python:3.12-slim AS builder
+FROM python:3.12-slim
+
+ARG UNSTRUCTURED_VERSION
 
 # Install system dependencies (including those needed for Unstructured and OpenCV)
 RUN apt-get update && apt-get install -y --no-install-recommends \
@@ -16,7 +18,11 @@ ENV PYTHONUNBUFFERED=1
 WORKDIR /app
 
 RUN pip install --no-cache-dir uv
-RUN uv pip install --system --no-cache-dir unstructured "unstructured[all-docs]"
+RUN if [ -n "${UNSTRUCTURED_VERSION}" ]; then \
+      uv pip install --system --no-cache-dir "unstructured[all-docs]==${UNSTRUCTURED_VERSION}"; \
+    else \
+      uv pip install --system --no-cache-dir "unstructured[all-docs]"; \
+    fi
 
 
 RUN python -c "from unstructured.partition.model_init import initialize; initialize()"
