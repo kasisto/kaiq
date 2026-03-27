@@ -158,6 +158,31 @@ class OpenAICompletionProvider(CompletionProvider):
                 "OLLAMA_API_BASE, LMSTUDIO_API_BASE, or AZURE_FOUNDRY_API_KEY and AZURE_FOUNDRY_API_ENDPOINT."
             )
 
+    async def close(self) -> None:
+        """Close all async OpenAI-compatible clients and their transports."""
+        for attr in (
+            'async_openai_client',
+            'async_azure_client',
+            'async_deepseek_client',
+            'async_ollama_client',
+            'async_lmstudio_client',
+        ):
+            client = getattr(self, attr, None)
+            if client is not None:
+                try:
+                    await client.close()
+                except Exception as e:
+                    logger.warning("Error closing %s: %s", attr, e)
+        # Azure Foundry async client uses a different close API
+        if self.async_azure_foundry_client is not None:
+            try:
+                await self.async_azure_foundry_client.close()
+            except Exception as e:
+                logger.warning(
+                    "Error closing async_azure_foundry_client: %s", e
+                )
+        logger.info("OpenAICompletionProvider async clients closed")
+
     def _get_client_and_model(self, model: str):
         """Determine which client to use based on model prefix and return the
         appropriate client and model name."""

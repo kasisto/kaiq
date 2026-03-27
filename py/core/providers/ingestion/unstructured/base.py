@@ -187,17 +187,13 @@ class UnstructuredIngestionProvider(IngestionProvider):
                     "UNSTRUCTURED_SERVICE_URL environment variable is not set"
                 ) from e
 
-            max_conn = int(os.environ.get("UNSTRUCTURED_MAX_CONNECTIONS", "20"))
-            max_keepalive = int(os.environ.get("UNSTRUCTURED_MAX_KEEPALIVE", "5"))
-            keepalive_expiry = int(os.environ.get("UNSTRUCTURED_KEEPALIVE_EXPIRY", "30"))
+            # Note: httpx.Limits is NOT passed here because AiohttpTransport
+            # manages its own connection pool; httpx silently ignores limits=
+            # when a custom transport is provided. Pool tuning for aiohttp
+            # is done via AIOHTTP_CONNECTOR_LIMIT* env vars (see app_entry.py).
             self.client = httpx.AsyncClient(
                 transport=AiohttpTransport(),
                 timeout=httpx.Timeout(3600, connect=30),
-                limits=httpx.Limits(
-                    max_connections=max_conn,
-                    max_keepalive_connections=max_keepalive,
-                    keepalive_expiry=keepalive_expiry,
-                ),
             )
 
         self.parsers: dict[DocumentType | str, AsyncParser] = {}  # type: ignore[type-arg]

@@ -71,7 +71,10 @@ class BCryptCryptoProvider(CryptoProvider, ABC):
             )
 
     def get_password_hash(self, password: str) -> str:
-        # Bcrypt expects bytes
+        # TODO(KAIG): bcrypt 5.0+ silently truncates passwords longer than
+        # 72 bytes.  Add an explicit length check here (or upstream in the
+        # registration endpoint) and reject / pre-hash passwords that exceed
+        # this limit to avoid surprising authentication failures.
         password_bytes = password.encode("utf-8")
         hashed = bcrypt.hashpw(
             password_bytes, bcrypt.gensalt(rounds=self.config.bcrypt_rounds)

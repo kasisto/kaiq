@@ -180,6 +180,12 @@ class AnthropicCompletionProvider(CompletionProvider):
         )
         logger.debug("AnthropicCompletionProvider initialized successfully")
 
+    async def close(self) -> None:
+        """Close the async Anthropic client and its underlying transport."""
+        if hasattr(self, 'async_client') and self.async_client is not None:
+            await self.async_client.close()
+            logger.info("AnthropicCompletionProvider async client closed")
+
     def _get_base_args(
         self, generation_config: GenerationConfig
     ) -> dict[str, Any]:

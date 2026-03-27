@@ -51,6 +51,8 @@ class R2RSerializable(BaseModel):
             return str(data)
         elif isinstance(data, Enum):
             return data.value
+        elif isinstance(data, bytes):
+            return data.decode("utf-8", errors="ignore")
         elif isinstance(data, datetime):
             return data.isoformat()
         else:

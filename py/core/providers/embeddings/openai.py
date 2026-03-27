@@ -88,6 +88,12 @@ class OpenAIEmbeddingProvider(EmbeddingProvider):
                 OpenAIEmbeddingProvider.MODEL_TO_DIMENSIONS[self.base_model]
             )
 
+    async def close(self) -> None:
+        """Close the async OpenAI client and its underlying HTTP transport."""
+        if hasattr(self, 'async_client') and self.async_client is not None:
+            await self.async_client.close()
+            logger.info("OpenAIEmbeddingProvider async client closed")
+
     def _get_dimensions(self):
         return (
             NOT_GIVEN

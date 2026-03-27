@@ -54,7 +54,7 @@ async def lifespan(app: FastAPI):
 
     # Shutdown — close provider HTTP clients and DB pools to prevent connection leaks
     if hasattr(r2r_app, 'providers'):
-        for name in ('ingestion', 'embedding', 'database'):
+        for name in ('ingestion', 'embedding', 'llm', 'database'):
             provider = getattr(r2r_app.providers, name, None)
             if provider and hasattr(provider, 'close'):
                 try:
