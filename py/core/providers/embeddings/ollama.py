@@ -43,7 +43,13 @@ class OllamaEmbeddingProvider(EmbeddingProvider):
         self.batch_size = config.batch_size or 32
 
     async def close(self) -> None:
-        """Close underlying HTTP clients."""
+        """Close underlying HTTP clients.
+
+        TODO: ollama SDK has no public close/aclose API. This reaches into
+        private internals (_client) which may break across SDK versions.
+        The hasattr guards prevent crashes but the connection would leak
+        if the internal structure changes.
+        """
         if hasattr(self.aclient, '_client') and hasattr(self.aclient._client, 'aclose'):
             await self.aclient._client.aclose()
             logger.info("OllamaEmbeddingProvider async client closed")

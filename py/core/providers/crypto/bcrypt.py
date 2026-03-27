@@ -87,7 +87,7 @@ class BCryptCryptoProvider(CryptoProvider, ABC):
         try:
             # First try to decode as base64 (new format)
             stored_hash = base64.b64decode(hashed_password.encode("utf-8"))
-            if not stored_hash.startswith(b"$2b$"):  # Valid bcrypt hash prefix
+            if not stored_hash.startswith((b"$2b$", b"$2a$")):  # Valid bcrypt hash prefixes
                 stored_hash = hashed_password.encode("utf-8")
         except Exception:
             # Otherwise raw bcrypt hash (old format)
