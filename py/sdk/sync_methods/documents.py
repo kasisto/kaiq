@@ -782,3 +782,101 @@ class DocumentsSDK:
         )
 
         return WrappedGenericMessageResponse(**response_dict)
+
+    def export_full(
+        self,
+        document_ids: list[str | UUID],
+        include_embeddings: bool = True,
+        include_knowledge_graphs: bool = True,
+        include_collections: bool = True,
+        output_path: Optional[str] = None,
+    ) -> bytes:
+        """Export documents with knowledge graphs as a ZIP file.
+
+        Args:
+            document_ids (list[str | UUID]): List of document IDs to export.
+            include_embeddings (bool): Include embeddings in export (default: True).
+            include_knowledge_graphs (bool): Include knowledge graphs in export (default: True).
+            include_collections (bool): Include collection metadata in export (default: True).
+            output_path (Optional[str]): Optional path to save the ZIP file. If not provided, returns bytes.
+
+        Returns:
+            bytes: ZIP file contents if output_path is None, otherwise saves to file and returns bytes.
+        """
+        data = {
+            "document_ids": [str(doc_id) for doc_id in document_ids],
+            "include_embeddings": include_embeddings,
+            "include_knowledge_graphs": include_knowledge_graphs,
+            "include_collections": include_collections,
+        }
+
+        # Make request and get raw bytes
+        response = self.client._make_streaming_request(
+            "POST",
+            "documents/export-full",
+            json=data,
+            version="v3",
+        )
+
+        # Read response content
+        content = response.content
+
+        # Save to file if output_path is provided
+        if output_path:
+            with open(output_path, "wb") as f:
+                f.write(content)
+
+        return content
+
+    def import_full(
+        self,
+        file_path: str,
+        mode: str = "full",
+        conflict_resolution: str = "skip",
+        regenerate_embeddings: bool = False,
+        target_collection_id: Optional[str | UUID] = None,
+        document_ids_filter: Optional[list[str | UUID]] = None,
+    ) -> dict:
+        """Import documents from an export ZIP file.
+
+        Args:
+            file_path (str): Path to the ZIP file containing exported documents.
+            mode (str): Import mode - 'full', 'metadata_only', or 'selective' (default: 'full').
+            conflict_resolution (str): Conflict resolution strategy - 'skip', 'replace', or 'error' (default: 'skip').
+            regenerate_embeddings (bool): Force regeneration of embeddings (default: False).
+            target_collection_id (Optional[str | UUID]): Override collection ID for all imported documents.
+            document_ids_filter (Optional[list[str | UUID]]): Only import specific documents (for selective mode).
+
+        Returns:
+            dict: Import result with success/failure counts.
+        """
+        # Read the file
+        with open(file_path, "rb") as f:
+            file_content = f.read()
+
+        # Prepare multipart form data
+        files = {"file": (os.path.basename(file_path), file_content, "application/zip")}
+
+        data = {
+            "mode": mode,
+            "conflict_resolution": conflict_resolution,
+            "regenerate_embeddings": str(regenerate_embeddings),
+        }
+
+        if target_collection_id:
+            data["target_collection_id"] = str(target_collection_id)
+
+        if document_ids_filter:
+            data["document_ids_filter"] = json.dumps(
+                [str(doc_id) for doc_id in document_ids_filter]
+            )
+
+        response_dict = self.client._make_request(
+            "POST",
+            "documents/import-full",
+            data=data,
+            files=files,
+            version="v3",
+        )
+
+        return response_dict

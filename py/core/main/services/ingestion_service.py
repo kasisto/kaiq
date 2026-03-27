@@ -1,5 +1,6 @@
 #py/core/main/services/ingestion_service.py
 import asyncio
+import io
 import json
 import logging
 from datetime import datetime
@@ -31,7 +32,13 @@ from core.base.abstractions import (
     VectorTableName,
 )
 from core.base.api.models import User
-from shared.abstractions import PDFParsingError, PopplerNotFoundError
+from shared.abstractions import (
+    ExportConfig,
+    ImportConfig,
+    ImportResult,
+    PDFParsingError,
+    PopplerNotFoundError,
+)
 
 from ..abstractions import R2RProviders
 from ..config import R2RConfig
@@ -930,6 +937,55 @@ class IngestionService:
         **kwargs: Any,
     ) -> dict:
         return await self.providers.database.chunks_handler.get_chunk(chunk_id)
+
+    async def export_documents_with_graphs(
+        self,
+        export_config: ExportConfig,
+        user_id: UUID,
+    ) -> tuple[str, io.BytesIO, int]:
+        """
+        Export documents with all associated data in a ZIP format.
+
+        Args:
+            export_config: Export configuration
+            user_id: User performing the export
+
+        Returns:
+            tuple of (zip_filename, zip_file_io, size_bytes)
+        """
+        from .export_service import ExportService
+
+        export_service = ExportService(self.config, self.providers)
+        return await export_service.export_documents_with_graphs(
+            export_config=export_config,
+            user_id=user_id,
+        )
+
+    async def import_documents_from_export(
+        self,
+        zip_file: io.BytesIO,
+        import_config: ImportConfig,
+        user: User,
+    ) -> ImportResult:
+        """
+        Import documents from export ZIP without reingestion.
+
+        Args:
+            zip_file: ZIP file containing exported documents
+            import_config: Import configuration
+            user: User performing the import
+
+        Returns:
+            ImportResult with success/failure counts and error details
+        """
+        from .import_service import ImportService
+
+        import_service = ImportService(self.config, self.providers)
+        return await import_service.import_documents_from_export(
+            zip_file=zip_file,
+            import_config=import_config,
+            user=user,
+        )
 
 
 class IngestionServiceAdapter:

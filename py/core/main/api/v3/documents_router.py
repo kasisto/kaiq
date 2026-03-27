@@ -40,7 +40,13 @@ from core.base.api.models import (
     WrappedRelationshipsResponse,
 )
 from core.utils import update_settings_from_dict
-from shared.abstractions import IngestionMode
+from shared.abstractions import (
+    ConflictResolution,
+    ExportConfig,
+    ImportConfig,
+    ImportMode,
+    IngestionMode,
+)
 
 from ...abstractions import R2RProviders, R2RServices
 from ...config import R2RConfig
@@ -2402,6 +2408,179 @@ class DocumentsRouter(BaseRouterV3):
                 media_type="text/csv",
                 filename="documents_export.csv",
             )
+
+        @self.router.post(
+            "/documents/export-full",
+            dependencies=[Depends(self.rate_limit_dependency)],
+            response_class=StreamingResponse,
+            summary="Export documents with knowledge graphs",
+            openapi_extra={
+                "x-codeSamples": [
+                    {
+                        "lang": "Python",
+                        "source": textwrap.dedent("""
+                            from r2r import R2RClient
+
+                            client = R2RClient()
+
+                            result = client.documents.export_full(
+                                document_ids=["doc-uuid-1", "doc-uuid-2"],
+                                include_embeddings=True,
+                                include_knowledge_graphs=True
+                            )
+
+                            # Save to file
+                            with open("export.zip", "wb") as f:
+                                f.write(result)
+                            """),
+                    },
+                ]
+            },
+        )
+        @self.base_endpoint
+        async def export_documents_full(
+            document_ids: list[UUID] = Body(
+                ...,
+                description="List of document IDs to export",
+            ),
+            include_embeddings: bool = Body(
+                default=True,
+                description="Include embeddings in export",
+            ),
+            include_knowledge_graphs: bool = Body(
+                default=True,
+                description="Include knowledge graphs in export",
+            ),
+            include_collections: bool = Body(
+                default=True,
+                description="Include collection metadata in export",
+            ),
+            auth_user=Depends(self.providers.auth.auth_wrapper()),
+        ) -> StreamingResponse:
+            """Export complete documents with knowledge graphs as ZIP.
+
+            This endpoint exports documents with all associated data including:
+            - Document metadata and original files
+            - Chunks and embeddings
+            - Knowledge graph entities and relationships
+            - Collection metadata
+
+            The export package can be imported without reingestion.
+            """
+            export_config = ExportConfig(
+                document_ids=document_ids,
+                include_embeddings=include_embeddings,
+                include_knowledge_graphs=include_knowledge_graphs,
+                include_collections=include_collections,
+            )
+
+            filename, zip_buffer, size = (
+                await self.services.ingestion.export_documents_with_graphs(
+                    export_config=export_config,
+                    user_id=auth_user.id,
+                )
+            )
+
+            zip_buffer.seek(0)
+
+            return StreamingResponse(
+                zip_buffer,
+                media_type="application/zip",
+                headers={
+                    "Content-Disposition": f'attachment; filename="{filename}"',
+                    "Content-Length": str(size),
+                },
+            )
+
+        @self.router.post(
+            "/documents/import-full",
+            dependencies=[Depends(self.rate_limit_dependency)],
+            summary="Import documents from export package",
+            openapi_extra={
+                "x-codeSamples": [
+                    {
+                        "lang": "Python",
+                        "source": textwrap.dedent("""
+                            from r2r import R2RClient
+
+                            client = R2RClient()
+
+                            result = client.documents.import_full(
+                                file_path="export.zip",
+                                mode="full",
+                                conflict_resolution="skip"
+                            )
+
+                            print(f"Imported {result['success_count']} documents")
+                            """),
+                    },
+                ]
+            },
+        )
+        @self.base_endpoint
+        async def import_documents_full(
+            file: UploadFile = File(
+                ...,
+                description="ZIP file containing exported documents",
+            ),
+            mode: ImportMode = Body(
+                default=ImportMode.FULL,
+                description="Import mode: full, metadata_only, or selective",
+            ),
+            conflict_resolution: ConflictResolution = Body(
+                default=ConflictResolution.SKIP,
+                description="Conflict resolution strategy: skip, replace, or error",
+            ),
+            regenerate_embeddings: bool = Body(
+                default=False,
+                description="Force regeneration of embeddings",
+            ),
+            target_collection_id: Optional[UUID] = Body(
+                default=None,
+                description="Override collection ID for all imported documents",
+            ),
+            document_ids_filter: Optional[list[UUID]] = Body(
+                default=None,
+                description="Only import specific documents (for selective mode)",
+            ),
+            auth_user=Depends(self.providers.auth.auth_wrapper()),
+        ):
+            """Import documents from export ZIP file.
+
+            This endpoint imports documents that were previously exported with
+            the export-full endpoint. It supports different import modes:
+
+            - full: Import everything including embeddings
+            - metadata_only: Skip embeddings (regenerate later)
+            - selective: Only import specific documents
+
+            Conflict resolution strategies:
+            - skip: Skip documents that already exist
+            - replace: Replace existing documents
+            - error: Fail if conflicts are found
+            """
+            # Read ZIP file into memory
+            zip_content = await file.read()
+            zip_buffer = BytesIO(zip_content)
+
+            import_config = ImportConfig(
+                mode=mode,
+                conflict_resolution=conflict_resolution,
+                regenerate_embeddings=regenerate_embeddings,
+                target_collection_id=target_collection_id,
+                document_ids_filter=document_ids_filter,
+            )
+
+            try:
+                result = await self.services.ingestion.import_documents_from_export(
+                    zip_file=zip_buffer,
+                    import_config=import_config,
+                    user=auth_user,
+                )
+                return result
+            except R2RException as e:
+                # Re-raise R2RException with proper status code (e.g., 409 for conflicts)
+                raise e
 
         @self.router.post(
             "/documents/search",

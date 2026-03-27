@@ -18,6 +18,17 @@ from .exception import (
     R2RDocumentProcessingError,
     R2RException,
 )
+from .export_import import (
+    ConflictResolution,
+    ExportCollectionInfo,
+    ExportConfig,
+    ExportDocumentInfo,
+    ExportManifest,
+    ImportConfig,
+    ImportError,
+    ImportMode,
+    ImportResult,
+)
 from .graph import (
     Community,
     Entity,
@@ -92,6 +103,16 @@ __all__ = [
     "R2RClientException",
     "PDFParsingError",
     "PopplerNotFoundError",
+    # Export/Import abstractions
+    "ImportMode",
+    "ConflictResolution",
+    "ExportManifest",
+    "ExportDocumentInfo",
+    "ExportCollectionInfo",
+    "ImportError",
+    "ImportResult",
+    "ExportConfig",
+    "ImportConfig",
     # Graph abstractions
     "Entity",
     "Community",
