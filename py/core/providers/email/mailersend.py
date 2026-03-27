@@ -1,8 +1,9 @@
+import asyncio
 import logging
 import os
 from typing import Optional
 
-from mailersend import emails
+from mailersend import EmailBuilder, MailerSendClient
 
 from core.base import EmailConfig, EmailProvider
 
@@ -42,7 +43,7 @@ class MailerSendEmailProvider(EmailProvider):
             config.password_changed_template_id
             or os.getenv("MAILERSEND_PASSWORD_CHANGED_TEMPLATE_ID")
         )
-        self.client = emails.NewEmail(self.api_key)
+        self.client = MailerSendClient(api_key=self.api_key)
         self.sender_name = config.sender_name or "R2R"
 
         # Logo and documentation URLs
@@ -69,69 +70,41 @@ class MailerSendEmailProvider(EmailProvider):
         try:
             logger.info("Preparing MailerSend message...")
 
-            mail_body = {
-                "from": {
-                    "email": self.from_email,
-                    "name": self.sender_name,
-                },
-                "to": [{"email": to_email}],
-            }
+            builder = (
+                EmailBuilder()
+                .from_email(self.from_email, self.sender_name)
+                .to_many([{"email": to_email}])
+            )
 
             if template_id:
-                # Transform the template data to MailerSend's expected format
+                builder = (
+                    builder
+                    .subject(subject or "")
+                    .template(template_id)
+                )
                 if dynamic_template_data:
-                    formatted_substitutions = {}
-                    for key, value in dynamic_template_data.items():
-                        formatted_substitutions[key] = {
-                            "var": key,
-                            "value": value,
-                        }
-                    mail_body["variables"] = [
+                    builder = builder.personalize_many([
                         {
                             "email": to_email,
-                            "substitutions": formatted_substitutions,
+                            "data": dynamic_template_data,
                         }
-                    ]
-
-                mail_body["template_id"] = template_id
+                    ])
             else:
-                mail_body.update(
-                    {
-                        "subject": subject or "",
-                        "text": body or "",
-                        "html": html_body or "",
-                    }
+                builder = (
+                    builder
+                    .subject(subject or "")
+                    .text(body or "")
+                    .html(html_body or "")
                 )
 
-            import asyncio
+            email = builder.build()
+            response = await asyncio.to_thread(
+                self.client.emails.send, email
+            )
 
-            response = await asyncio.to_thread(self.client.send, mail_body)
-
-            # Handle different response formats
-            if isinstance(response, str):
-                # Clean the string response by stripping whitespace
-                response_clean = response.strip()
-                if response_clean in ["202", "200"]:
-                    logger.info(
-                        f"Email accepted for delivery with status code {response_clean}"
-                    )
-                    return
-            elif isinstance(response, int) and response in [200, 202]:
-                logger.info(
-                    f"Email accepted for delivery with status code {response}"
-                )
-                return
-            elif isinstance(response, dict) and response.get(
-                "status_code"
-            ) in [200, 202]:
-                logger.info(
-                    f"Email accepted for delivery with status code {response.get('status_code')}"
-                )
-                return
-
-            # If we get here, it's an error
-            error_msg = f"MailerSend error: {response}"
-            logger.error(error_msg)
+            logger.info(
+                "Email accepted for delivery: %s", response
+            )
 
         except Exception as e:
             error_msg = f"Failed to send email to {to_email}: {str(e)}"

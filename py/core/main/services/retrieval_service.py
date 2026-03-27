@@ -565,8 +565,8 @@ class RetrievalService(Service):
             query=query, num_sub_queries=search_settings.num_sub_queries
         )
 
-        chunk_all = []
-        graph_all = []
+        chunk_all: list[ChunkSearchResult] = []
+        graph_all: list[GraphSearchResult] = []
 
         # We'll gather the per-doc searches in parallel
         tasks = []
@@ -587,7 +587,7 @@ class RetrievalService(Service):
 
         # Flatten chunk+graph results — skip failed fanout tasks
         for result in results_list:
-            if isinstance(result, Exception):
+            if isinstance(result, BaseException):
                 logger.error("Search fanout task failed: %s", result)
                 continue
             c_results, g_results = result

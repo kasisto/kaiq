@@ -10,7 +10,7 @@ from io import BytesIO
 from typing import AsyncGenerator
 
 import pdf2image
-from mistralai.models import OCRResponse
+from mistralai.client.models import OCRResponse
 from pypdf import PdfReader
 
 from core.base.abstractions import GenerationConfig

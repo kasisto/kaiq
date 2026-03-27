@@ -3,7 +3,7 @@ from abc import ABC
 from enum import Enum
 from typing import TYPE_CHECKING, Any, ClassVar, Optional
 
-from pydantic import Field
+from pydantic import BaseModel, Field, field_validator
 
 from core.base.abstractions import ChunkEnrichmentSettings
 
@@ -197,10 +197,28 @@ class IngestionConfig(ProviderConfig):
         ]
     )
 
+    @field_validator("chunk_enrichment_settings", mode="before")
+    @classmethod
+    def coerce_chunk_enrichment_settings(
+        cls, v: Any
+    ) -> ChunkEnrichmentSettings:
+        if isinstance(v, dict):
+            return ChunkEnrichmentSettings(**v)
+        return v
+
     @classmethod
     def set_default(cls, **kwargs):
         for key, value in kwargs.items():
             if key in cls._defaults:
+                # Coerce dicts back to model instances so that
+                # default_factory returns the correct type (Pydantic v2
+                # does NOT run field validators on default_factory values).
+                if isinstance(value, dict) and key in cls.model_fields:
+                    ann = cls.model_fields[key].annotation
+                    if isinstance(ann, type) and issubclass(
+                        ann, BaseModel
+                    ):
+                        value = ann(**value)
                 cls._defaults[key] = value
             else:
                 raise AttributeError(

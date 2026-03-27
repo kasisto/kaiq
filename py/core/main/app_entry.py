@@ -3,21 +3,21 @@ import os
 from contextlib import asynccontextmanager
 from typing import Optional
 
+# Configure aiohttp connection pool limits before litellm creates any connectors.
+# Without these, litellm's aiohttp transport can accumulate CLOSE_WAIT connections.
+# See: https://github.com/BerriAI/litellm/issues/13251
+# Defaults: 300 total, 50 per host — override via env vars.
+os.environ.setdefault("AIOHTTP_CONNECTOR_LIMIT", "300")
+os.environ.setdefault("AIOHTTP_CONNECTOR_LIMIT_PER_HOST", "50")
+
+import litellm
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
 from fastapi import FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 
-import litellm
-
 from core.base import R2RException
 from core.utils.logging_config import configure_logging
-
-# Disable aiohttp transport in litellm to prevent session leaks.
-# LiteLLM >= 1.74.15 uses aiohttp by default and creates ClientSession objects
-# that are never closed, causing CLOSE_WAIT connection accumulation.
-# See: https://github.com/BerriAI/litellm/issues/13251
-litellm.disable_aiohttp_transport = True
 
 from .app import R2RApp
 from .assembly import R2RBuilder, R2RConfig
@@ -62,6 +62,14 @@ async def lifespan(app: FastAPI):
                     logging.info("Closed %s provider", name)
                 except Exception as e:
                     logging.warning("Error closing %s provider: %s", name, e)
+
+    # Close litellm's aiohttp client sessions to prevent CLOSE_WAIT accumulation.
+    # See: https://github.com/BerriAI/litellm/pull/12251
+    try:
+        await litellm.close_litellm_async_clients()
+        logging.info("Closed litellm async clients")
+    except Exception as e:
+        logging.warning("Error closing litellm async clients: %s", e)
 
     scheduler.shutdown()
 

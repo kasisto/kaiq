@@ -142,7 +142,7 @@ class HTMLToMarkdownParser(AsyncParser[str | bytes]):
         Supports CSS selector-based preprocessing for custom HTML structures.
         """
         try:
-            from html_to_markdown import convert, ConversionOptions
+            from html_to_markdown import ConversionOptions, convert
 
             # Convert bytes to string if needed
             if isinstance(data, bytes):

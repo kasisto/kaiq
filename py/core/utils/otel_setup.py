@@ -30,7 +30,7 @@ try:
     from opentelemetry import trace
     OTEL_AVAILABLE = True
 except ImportError:
-    trace = None
+    trace = None  # type: ignore[assignment]
     OTEL_AVAILABLE = False
 
 logger = logging.getLogger(__name__)

@@ -1,7 +1,7 @@
 from abc import ABC, abstractmethod
 from typing import Any, Optional, Type
 
-from pydantic import BaseModel
+from pydantic import BaseModel, ConfigDict
 
 
 class InnerConfig(BaseModel, ABC):
@@ -9,10 +9,11 @@ class InnerConfig(BaseModel, ABC):
 
     extra_fields: dict[str, Any] = {}
 
-    class Config:
-        populate_by_name = True
-        arbitrary_types_allowed = True
-        ignore_extra = True
+    model_config = ConfigDict(
+        populate_by_name=True,
+        arbitrary_types_allowed=True,
+        extra="ignore",
+    )
 
     @classmethod
     def create(cls: Type["InnerConfig"], **kwargs: Any) -> "InnerConfig":
@@ -88,10 +89,11 @@ class ProviderConfig(BaseModel, ABC):
     extra_fields: dict[str, Any] = {}
     provider: Optional[str] = None
 
-    class Config:
-        populate_by_name = True
-        arbitrary_types_allowed = True
-        ignore_extra = True
+    model_config = ConfigDict(
+        populate_by_name=True,
+        arbitrary_types_allowed=True,
+        extra="ignore",
+    )
 
     @abstractmethod
     def validate_config(self) -> None:

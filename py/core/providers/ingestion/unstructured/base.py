@@ -9,6 +9,7 @@ from io import BytesIO
 from typing import Any, AsyncGenerator
 
 import httpx
+from httpx_aiohttp import AiohttpTransport
 from unstructured_client import UnstructuredClient
 from unstructured_client.models import operations, shared
 
@@ -22,7 +23,11 @@ from core.base import (
     RecursiveCharacterTextSplitter,
 )
 from core.base.abstractions import R2RSerializable
-from core.base.providers.ingestion import IngestionConfig, IngestionProvider, SemanticParsingLimitExceeded
+from core.base.providers.ingestion import (
+    IngestionConfig,
+    IngestionProvider,
+    SemanticParsingLimitExceeded,
+)
 from core.providers.ocr import MistralOCRProvider
 from core.utils import generate_extraction_id
 from core.utils.semantic_metadata import parse_semantic_metadata
@@ -186,6 +191,7 @@ class UnstructuredIngestionProvider(IngestionProvider):
             max_keepalive = int(os.environ.get("UNSTRUCTURED_MAX_KEEPALIVE", "5"))
             keepalive_expiry = int(os.environ.get("UNSTRUCTURED_KEEPALIVE_EXPIRY", "30"))
             self.client = httpx.AsyncClient(
+                transport=AiohttpTransport(),
                 timeout=httpx.Timeout(3600, connect=30),
                 limits=httpx.Limits(
                     max_connections=max_conn,
@@ -194,7 +200,7 @@ class UnstructuredIngestionProvider(IngestionProvider):
                 ),
             )
 
-        self.parsers: dict[DocumentType, AsyncParser] = {}
+        self.parsers: dict[DocumentType | str, AsyncParser] = {}  # type: ignore[type-arg]
         self._initialize_parsers()
 
     async def close(self) -> None:

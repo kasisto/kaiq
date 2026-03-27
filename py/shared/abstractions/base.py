@@ -5,7 +5,7 @@ from enum import Enum
 from typing import Any, Type, TypeVar
 from uuid import UUID
 
-from pydantic import BaseModel
+from pydantic import BaseModel, ConfigDict
 
 T = TypeVar("T", bound="R2RSerializable")
 
@@ -56,12 +56,7 @@ class R2RSerializable(BaseModel):
         else:
             return data
 
-    class Config:
-        arbitrary_types_allowed = True
-        json_encoders = {
-            UUID: str,
-            bytes: lambda v: v.decode("utf-8", errors="ignore"),
-        }
+    model_config = ConfigDict(arbitrary_types_allowed=True)
 
 
 class AsyncSyncMeta(type):
