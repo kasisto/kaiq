@@ -162,7 +162,7 @@ ignore_missing_imports = true
 
 [tool.pytest.ini_options]
 asyncio_mode = "auto"
-addopts = "--cov=r2r --cov-report=term-missing --cov-report=xml --cache-clear --import-mode=importlib"
+addopts = "--cov --cov-report=term-missing --cov-report=xml --cache-clear --import-mode=importlib"
 testpaths = [
     "tests",
 ]
