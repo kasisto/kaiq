@@ -379,6 +379,8 @@ def simple_ingestion_factory(service: IngestionService):
                     status=IngestionStatus.FAILED,
                     metadata={"failure": f"{str(e)}"},
                 )
+            if isinstance(e, R2RException):
+                raise
             raise HTTPException(
                 status_code=500,
                 detail=f"Error during chunk ingestion: {str(e)}",
