@@ -12,6 +12,7 @@ from typing import (
 )
 
 from anthropic import Anthropic, AsyncAnthropic
+from httpx_aiohttp import HttpxAiohttpClient
 from anthropic.types import (
     ContentBlockStopEvent,
     Message,
@@ -174,7 +175,9 @@ class AnthropicCompletionProvider(CompletionProvider):
     def __init__(self, config: CompletionConfig, *args, **kwargs) -> None:
         super().__init__(config)
         self.client = Anthropic()
-        self.async_client = AsyncAnthropic()
+        self.async_client = AsyncAnthropic(
+            http_client=HttpxAiohttpClient(),
+        )
         logger.debug("AnthropicCompletionProvider initialized successfully")
 
     def _get_base_args(
