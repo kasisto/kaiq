@@ -170,8 +170,9 @@ class PostgresCollectionsHandler(Handler):
                 document_count=0,
             )
         except UniqueViolationError as e:
+            logger.debug(f"UniqueViolationError during collection creation: {e}")
             raise R2RException(
-                message=f"Unique constraint violation: {str(e)}",
+                message="Collection with this ID already exists.",
                 status_code=409,
             ) from None
         except Exception as e:

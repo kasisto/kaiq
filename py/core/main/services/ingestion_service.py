@@ -553,24 +553,17 @@ class IngestionService:
         self, document_info: DocumentResponse
     ):
         try:
-            # Check if document still exists before updating status
-            # This prevents recreating documents that were deleted during ingestion
-            existing_docs = await self.providers.database.documents_handler.get_documents_overview(
-                offset=0,
-                limit=1,
-                filter_document_ids=[document_info.id]
+            await self.providers.database.documents_handler.upsert_documents_overview(
+                document_info
             )
-            
-            if not existing_docs["results"]:
+        except R2RException as e:
+            if e.status_code == 404:
                 logger.warning(
                     f"Document {document_info.id} no longer exists. "
                     f"Skipping status update to {document_info.ingestion_status}."
                 )
                 return
-            
-            await self.providers.database.documents_handler.upsert_documents_overview(
-                document_info
-            )
+            raise
         except Exception as e:
             logger.error(
                 f"Failed to update document status: {document_info.id}. Error: {str(e)}"

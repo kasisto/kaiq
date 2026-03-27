@@ -95,9 +95,16 @@ class PostgresFileProvider(FileProvider):
         file_type: Optional[str] = None,
     ) -> None:
         """Store a new file in the database."""
-        file_content.seek(0, 2)
-        size = file_content.tell()
-        file_content.seek(0)
+        if hasattr(file_content, 'seekable') and file_content.seekable():
+            file_content.seek(0, 2)
+            size = file_content.tell()
+            file_content.seek(0)
+        else:
+            # For non-seekable streams, read into BytesIO
+            import io
+            data = file_content.read()
+            size = len(data)
+            file_content = io.BytesIO(data)
 
         async with (
             self.connection_manager.pool.get_connection() as conn  # type: ignore

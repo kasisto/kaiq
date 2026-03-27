@@ -633,6 +633,8 @@ class R2RIngestionProvider(IngestionProvider):
                     metadata = {**document.metadata, "chunk_order": iteration}
                     if "page_number" in content_item:
                         metadata["page_number"] = content_item["page_number"]
+                    elif "page_number" in parser_generated:
+                        metadata["page_number"] = parser_generated["page_number"]
                     if parser_generated:
                         metadata["parser_generated"] = parser_generated
 

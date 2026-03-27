@@ -4,6 +4,7 @@ import csv
 import json
 import logging
 import math
+import random
 import tempfile
 from typing import IO, Any, Optional
 from uuid import UUID
@@ -211,10 +212,9 @@ class PostgresDocumentsHandler(Handler):
                         self.connection_manager.pool.get_connection() as conn  # type: ignore
                     ):
                         async with conn.transaction(isolation='serializable'):
-                            # Lock the row for update
                             check_query = f"""
                             SELECT ingestion_attempt_number, ingestion_status FROM {self._get_table_name(PostgresDocumentsHandler.TABLE_NAME)}
-                            WHERE id = $1 FOR UPDATE
+                            WHERE id = $1
                             """
                             existing_doc = await conn.fetchrow(
                                 check_query, document.id
@@ -337,7 +337,7 @@ class PostgresDocumentsHandler(Handler):
                         )
                         raise
                     else:
-                        wait_time = 0.1 * (2**retries)  # Exponential backoff
+                        wait_time = 0.1 * (2**retries) * (0.5 + random.random())  # Exponential backoff with jitter
                         await asyncio.sleep(wait_time)
 
     async def delete(
@@ -623,7 +623,7 @@ class PostgresDocumentsHandler(Handler):
         base_query = (
             f"FROM {self._get_table_name(PostgresDocumentsHandler.TABLE_NAME)}"
         )
-        
+
         if conditions:
             # Combine everything with AND
             base_query += " WHERE " + " AND ".join(conditions)
