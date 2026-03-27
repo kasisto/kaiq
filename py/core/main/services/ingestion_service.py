@@ -159,10 +159,15 @@ class IngestionService:
         metadata = metadata or {}
         metadata["version"] = version
 
+        collection_ids = metadata.get("collection_ids", [])
+        if not collection_ids and user.collection_ids:
+            # If no collection_ids provided, assign to user's first collection (default)
+            collection_ids = [user.collection_ids[0]]
+
         return DocumentResponse(
             id=document_id,
             owner_id=user.id,
-            collection_ids=metadata.get("collection_ids", []),
+            collection_ids=collection_ids,
             document_type=DocumentType[file_extension.upper()],
             title=(
                 metadata.get("title", file_name.split("/")[-1])
@@ -188,10 +193,15 @@ class IngestionService:
         metadata = metadata or {}
         metadata["version"] = version
 
+        collection_ids = metadata.get("collection_ids", [])
+        if not collection_ids and user.collection_ids:
+            # If no collection_ids provided, assign to user's first collection (default)
+            collection_ids = [user.collection_ids[0]]
+
         return DocumentResponse(
             id=document_id,
             owner_id=user.id,
-            collection_ids=metadata.get("collection_ids", []),
+            collection_ids=collection_ids,
             document_type=DocumentType.TXT,
             title=metadata.get("title", f"Ingested Chunks - {document_id}"),
             metadata=metadata,
@@ -546,6 +556,14 @@ class IngestionService:
             await self.providers.database.documents_handler.upsert_documents_overview(
                 document_info
             )
+        except R2RException as e:
+            if e.status_code == 404:
+                logger.warning(
+                    f"Document {document_info.id} no longer exists. "
+                    f"Skipping status update to {document_info.ingestion_status}."
+                )
+                return
+            raise
         except Exception as e:
             logger.error(
                 f"Failed to update document status: {document_info.id}. Error: {str(e)}"

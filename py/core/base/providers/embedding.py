@@ -7,6 +7,7 @@ from enum import Enum
 from typing import Any, Optional
 
 from litellm import AuthenticationError
+from pydantic import SecretStr
 
 from core.base.abstractions import VectorQuantizationSettings
 
@@ -29,6 +30,8 @@ class EmbeddingConfig(ProviderConfig):
     max_retries: int = 3
     initial_backoff: float = 1
     max_backoff: float = 64.0
+    api_base: Optional[str] = None
+    api_key: Optional[SecretStr] = None
     quantization_settings: VectorQuantizationSettings = (
         VectorQuantizationSettings()
     )

@@ -91,11 +91,20 @@ class PostgresFileProvider(FileProvider):
         self,
         document_id: UUID,
         file_name: str,
-        file_content: io.BytesIO,
+        file_content: BinaryIO,
         file_type: Optional[str] = None,
     ) -> None:
         """Store a new file in the database."""
-        size = file_content.getbuffer().nbytes
+        if hasattr(file_content, 'seekable') and file_content.seekable():
+            file_content.seek(0, 2)
+            size = file_content.tell()
+            file_content.seek(0)
+        else:
+            # For non-seekable streams, read into BytesIO
+            import io
+            data = file_content.read()
+            size = len(data)
+            file_content = io.BytesIO(data)
 
         async with (
             self.connection_manager.pool.get_connection() as conn  # type: ignore
@@ -108,7 +117,7 @@ class PostgresFileProvider(FileProvider):
                 )
 
     async def _write_lobject(
-        self, conn, oid: int, file_content: io.BytesIO
+        self, conn, oid: int, file_content: BinaryIO
     ) -> None:
         """Write content to a large object."""
         lobject = await conn.fetchval("SELECT lo_open($1, $2)", oid, 0x20000)
