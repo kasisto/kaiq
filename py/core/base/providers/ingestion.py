@@ -215,6 +215,13 @@ class IngestionConfig(ProviderConfig):
                 # does NOT run field validators on default_factory values).
                 if isinstance(value, dict) and key in cls.model_fields:
                     ann = cls.model_fields[key].annotation
+                    # Unwrap Optional[X] / X | None to get the inner type
+                    from typing import Union, get_args, get_origin
+                    origin = get_origin(ann)
+                    if origin is Union:
+                        inner = [a for a in get_args(ann) if a is not type(None)]
+                        if len(inner) == 1:
+                            ann = inner[0]
                     if isinstance(ann, type) and issubclass(
                         ann, BaseModel
                     ):

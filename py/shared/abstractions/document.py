@@ -101,7 +101,7 @@ class Document(R2RSerializable):
 
     model_config = ConfigDict(
         arbitrary_types_allowed=True,
-        extra="forbid",
+        extra="ignore",  # was ignore_extra=False (no-op in v1); keep permissive for API compat
         populate_by_name=True,
     )
 

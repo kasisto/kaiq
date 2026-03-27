@@ -187,12 +187,18 @@ class UnstructuredIngestionProvider(IngestionProvider):
                     "UNSTRUCTURED_SERVICE_URL environment variable is not set"
                 ) from e
 
-            # Note: httpx.Limits is NOT passed here because AiohttpTransport
-            # manages its own connection pool; httpx silently ignores limits=
-            # when a custom transport is provided. Pool tuning for aiohttp
-            # is done via AIOHTTP_CONNECTOR_LIMIT* env vars (see app_entry.py).
+            max_conn = int(os.environ.get("UNSTRUCTURED_MAX_CONNECTIONS", "50"))
+            max_keepalive = int(os.environ.get("UNSTRUCTURED_MAX_KEEPALIVE", "20"))
+            keepalive_expiry = int(os.environ.get("UNSTRUCTURED_KEEPALIVE_EXPIRY", "120"))
+
             self.client = httpx.AsyncClient(
-                transport=AiohttpTransport(),
+                transport=AiohttpTransport(
+                    limits=httpx.Limits(
+                        max_connections=max_conn,
+                        max_keepalive_connections=max_keepalive,
+                        keepalive_expiry=keepalive_expiry,
+                    ),
+                ),
                 timeout=httpx.Timeout(3600, connect=30),
             )
 

@@ -102,6 +102,9 @@ class MailerSendEmailProvider(EmailProvider):
                 self.client.emails.send, email
             )
 
+            # MailerSend v2 SDK returns a string response body on success.
+            # On error (4xx/5xx) it raises mailersend.exceptions.MailerSendException.
+            # Log success only after we know it didn't raise.
             logger.info(
                 "Email accepted for delivery: %s", response
             )
