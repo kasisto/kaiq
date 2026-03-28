@@ -2,6 +2,7 @@ import asyncio
 import json
 import logging
 import os
+import time
 from datetime import timedelta
 from typing import Any, Optional
 from uuid import UUID
@@ -29,11 +30,24 @@ from core.utils import (
     num_tokens,
     update_settings_from_dict,
 )
-from core.utils.otel_setup import set_tenant_context_from_metadata
+from core.utils.otel_setup import (
+    create_duration_histogram,
+    get_meter,
+    get_tenant_context,
+    set_tenant_context_from_metadata,
+)
 
 from ...services import IngestionService, IngestionServiceAdapter
 
 logger = logging.getLogger(__name__)
+
+# ── OTel Metrics for Per-Phase Ingestion Duration (Tier 3 #15) ──
+_meter = get_meter("r2r.ingestion")
+_phase_duration = create_duration_histogram(
+    _meter,
+    "r2r.ingestion.phase_duration_seconds",
+    description="Duration of individual ingestion pipeline phases",
+)
 
 
 # ---------------------------------------------------------------------------
@@ -51,6 +65,27 @@ def extract_user_id(data: dict) -> str:
     except Exception:
         pass
     return "unknown"
+
+
+def _record_phase_duration(
+    phase: str, start: float
+) -> None:
+    """Record ingestion phase duration metric.
+
+    Phases: parsing, augmenting, embedding, storing, enriching.
+    """
+    try:
+        ctx = get_tenant_context()
+        _phase_duration.record(
+            time.monotonic() - start,
+            {
+                "org_id": ctx.get("org_id", ""),
+                "tenant_id": ctx.get("tenant_id", ""),
+                "phase": phase,
+            },
+        )
+    except Exception:
+        pass
 
 
 def should_skip_graph_extraction(
@@ -196,12 +231,15 @@ def hatchet_ingestion_factory(
                 document_info, status=IngestionStatus.PARSING,
             )
 
+            # Tier 3 #15: Per-phase ingestion duration
+            _phase_start = time.monotonic()
             ingestion_config = parsed_data["ingestion_config"] or {}
             extractions = [
                 e async for e in service.parse_file(
                     document_info, ingestion_config
                 )
             ]
+            _record_phase_duration("parsing", _phase_start)
 
             # Sum tokens
             total_tokens = 0
@@ -218,26 +256,32 @@ def hatchet_ingestion_factory(
                 await service.update_document_status(
                     document_info, status=IngestionStatus.AUGMENTING,
                 )
+                _phase_start = time.monotonic()
                 await service.augment_document_info(
                     document_info, extraction_dicts,
                 )
+                _record_phase_duration("augmenting", _phase_start)
 
             await service.update_document_status(
                 document_info, status=IngestionStatus.EMBEDDING,
             )
 
+            _phase_start = time.monotonic()
             embeddings = [
                 emb async for emb in service.embed_document(
                     extraction_dicts
                 )
             ]
+            _record_phase_duration("embedding", _phase_start)
 
             await service.update_document_status(
                 document_info, status=IngestionStatus.STORING,
             )
 
+            _phase_start = time.monotonic()
             async for _ in service.store_embeddings(embeddings):
                 pass
+            _record_phase_duration("storing", _phase_start)
 
             await service.finalize_ingestion(document_info)
             await service.update_document_status(
@@ -666,11 +710,13 @@ async def _maybe_enrich_chunks(
     await service.update_document_status(
         document_info, status=IngestionStatus.ENRICHING,
     )
+    _phase_start = time.monotonic()
     await service.chunk_enrichment(
         document_id=document_info.id,
         document_summary=document_info.summary,
         chunk_enrichment_settings=settings,
     )
+    _record_phase_duration("enriching", _phase_start)
     await service.update_document_status(
         document_info, status=IngestionStatus.SUCCESS,
     )
@@ -706,6 +752,10 @@ async def _maybe_extract_graph(
         )
         return
 
+    # Tier 1 #1: Propagate tenant context from document metadata
+    # to graph extraction workflow so graph steps have org/tenant
+    # attribution for all OTel metrics and spans.
+    doc_metadata = document_info.metadata or {}
     extract_input = {
         "document_id": str(document_info.id),
         "graph_creation_settings": (
@@ -713,6 +763,8 @@ async def _maybe_extract_graph(
             .graph_creation_settings.model_dump_json()
         ),
         "user": input_data["user"],
+        "org_id": str(doc_metadata.get("org_id", "")),
+        "tenant_id": str(doc_metadata.get("tenant_id", "")),
     }
 
     graph_wf = provider.get_workflow("graph-extraction")

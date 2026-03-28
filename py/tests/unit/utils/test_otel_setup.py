@@ -7,17 +7,25 @@
 
 """Tests for OpenTelemetry multi-tenant context setup."""
 
+import asyncio
 import logging
 from unittest.mock import MagicMock, AsyncMock, patch
 
 import pytest
 
 from core.utils.otel_setup import (
+    BYTES_BUCKETS,
+    COUNT_BUCKETS,
+    DURATION_SECONDS_BUCKETS,
     TenantLogFilter,
     TenantSpanProcessor,
     _org_id_var,
     _tenant_id_var,
     _user_id_var,
+    classify_error,
+    create_bytes_histogram,
+    create_count_histogram,
+    create_duration_histogram,
     get_tenant_context,
     set_tenant_context,
     set_tenant_context_from_metadata,
@@ -395,3 +403,132 @@ class TestSetTenantContextFromMetadata:
             assert ctx["tenant_id"] == "123"
         finally:
             set_tenant_context()
+
+
+class TestHistogramBucketConstants:
+    """Tests for pre-defined bucket boundary constants."""
+
+    def test_duration_buckets_sorted(self):
+        """Duration buckets are sorted ascending."""
+        assert DURATION_SECONDS_BUCKETS == sorted(DURATION_SECONDS_BUCKETS)
+
+    def test_duration_buckets_not_empty(self):
+        assert len(DURATION_SECONDS_BUCKETS) > 0
+
+    def test_bytes_buckets_sorted(self):
+        """Bytes buckets are sorted ascending."""
+        assert BYTES_BUCKETS == sorted(BYTES_BUCKETS)
+
+    def test_bytes_buckets_cover_range(self):
+        """Bytes buckets cover 1KB to 100MB."""
+        assert BYTES_BUCKETS[0] == 1024
+        assert BYTES_BUCKETS[-1] == 104_857_600
+
+    def test_count_buckets_sorted(self):
+        """Count buckets are sorted ascending."""
+        assert COUNT_BUCKETS == sorted(COUNT_BUCKETS)
+
+    def test_count_buckets_start_at_zero(self):
+        assert COUNT_BUCKETS[0] == 0
+
+
+class TestHistogramHelpers:
+    """Tests for histogram creation helper functions."""
+
+    def test_create_duration_histogram_with_noop_meter(self):
+        """Duration histogram works with NoOp meter."""
+        meter = NoOpMeter()
+        h = create_duration_histogram(meter, "test.duration")
+        h.record(1.5)  # Should not raise
+
+    def test_create_bytes_histogram_with_noop_meter(self):
+        """Bytes histogram works with NoOp meter."""
+        meter = NoOpMeter()
+        h = create_bytes_histogram(meter, "test.bytes")
+        h.record(1024)  # Should not raise
+
+    def test_create_count_histogram_with_noop_meter(self):
+        """Count histogram works with NoOp meter."""
+        meter = NoOpMeter()
+        h = create_count_histogram(meter, "test.count")
+        h.record(42)  # Should not raise
+
+    def test_create_duration_histogram_with_real_meter(self):
+        """Duration histogram passes boundaries to real OTel meter."""
+        meter = get_meter("test.histogram")
+        h = create_duration_histogram(
+            meter, "test.real.duration",
+            description="Test duration histogram",
+        )
+        # Should not raise; metric is created successfully
+        h.record(0.5)
+
+    def test_create_duration_histogram_fallback_on_type_error(self):
+        """Falls back gracefully if meter doesn't accept boundary kwarg."""
+        mock_meter = MagicMock()
+        # First call raises TypeError (doesn't accept kwarg),
+        # second call succeeds
+        mock_meter.create_histogram.side_effect = [
+            TypeError("unexpected kwarg"),
+            MagicMock(),
+        ]
+        h = create_duration_histogram(mock_meter, "test.fallback")
+        assert h is not None
+        assert mock_meter.create_histogram.call_count == 2
+
+
+class TestClassifyError:
+    """Tests for error classification helper."""
+
+    def test_rate_limit_by_status_code(self):
+        assert classify_error(Exception("HTTP 429 Too Many Requests")) == "rate_limit"
+
+    def test_rate_limit_by_message(self):
+        assert classify_error(Exception("rate limit exceeded")) == "rate_limit"
+
+    def test_auth_error_by_status_code(self):
+        assert classify_error(Exception("HTTP 401 Unauthorized")) == "auth_error"
+
+    def test_auth_error_by_403(self):
+        assert classify_error(Exception("HTTP 403 Forbidden")) == "auth_error"
+
+    def test_auth_error_by_type_name(self):
+        class AuthenticationError(Exception):
+            pass
+        assert classify_error(AuthenticationError("bad key")) == "auth_error"
+
+    def test_timeout_by_type(self):
+        assert classify_error(TimeoutError("timed out")) == "timeout"
+
+    def test_timeout_by_asyncio_type(self):
+        assert classify_error(asyncio.TimeoutError()) == "timeout"
+
+    def test_timeout_by_message(self):
+        assert classify_error(Exception("connection timeout")) == "timeout"
+
+    def test_parse_error_by_type(self):
+        class ParseError(Exception):
+            pass
+        assert classify_error(ParseError("bad input")) == "parse_error"
+
+    def test_parse_error_by_json_decode(self):
+        class JSONDecodeError(Exception):
+            pass
+        assert classify_error(JSONDecodeError("bad json")) == "parse_error"
+
+    def test_provider_error_by_type(self):
+        class APIError(Exception):
+            pass
+        assert classify_error(APIError("server error")) == "provider_error"
+
+    def test_provider_error_by_500(self):
+        assert classify_error(Exception("HTTP 500 Internal Server Error")) == "provider_error"
+
+    def test_provider_error_by_503(self):
+        assert classify_error(Exception("503 service unavailable")) == "provider_error"
+
+    def test_unknown_fallback(self):
+        assert classify_error(Exception("something went wrong")) == "unknown"
+
+    def test_empty_message(self):
+        assert classify_error(Exception("")) == "unknown"

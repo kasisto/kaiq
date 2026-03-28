@@ -36,7 +36,13 @@ from shared.abstractions import PDFParsingError, PopplerNotFoundError
 from ..abstractions import R2RProviders
 from ..config import R2RConfig
 
-from core.utils.otel_setup import get_meter, get_tenant_context
+from core.utils.otel_setup import (
+    classify_error,
+    create_bytes_histogram,
+    create_duration_histogram,
+    get_meter,
+    get_tenant_context,
+)
 
 logger = logging.getLogger()
 STARTING_VERSION = "v0"
@@ -53,14 +59,14 @@ _chunks_counter = _meter.create_counter(
     unit="{chunk}",
     description="Total chunks stored",
 )
-_ingestion_duration = _meter.create_histogram(
+_ingestion_duration = create_duration_histogram(
+    _meter,
     "r2r.ingestion.duration_seconds",
-    unit="s",
     description="End-to-end ingestion pipeline duration",
 )
-_document_size_bytes = _meter.create_histogram(
+_document_size_bytes = create_bytes_histogram(
+    _meter,
     "r2r.ingestion.document_size_bytes",
-    unit="By",
     description="Size of ingested documents in bytes",
 )
 
@@ -634,6 +640,14 @@ class IngestionService:
                     if document_info.document_type
                     else "unknown"
                 )
+                # Classify error from failure metadata if available
+                error_type = "unknown"
+                if metadata and metadata.get("failure"):
+                    failure_msg = str(metadata["failure"])
+                    # Create a synthetic exception for classification
+                    error_type = classify_error(
+                        Exception(failure_msg)
+                    )
                 _documents_counter.add(
                     1,
                     {
@@ -641,6 +655,7 @@ class IngestionService:
                         "tenant_id": ctx.get("tenant_id", ""),
                         "status": "failure",
                         "document_type": doc_type,
+                        "error_type": error_type,
                     },
                 )
             except Exception:

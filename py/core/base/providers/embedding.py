@@ -15,7 +15,13 @@ from ..abstractions import (
 )
 from .base import Provider, ProviderConfig
 
-from core.utils.otel_setup import get_meter, get_tenant_context
+from core.utils.otel_setup import (
+    classify_error,
+    create_count_histogram,
+    create_duration_histogram,
+    get_meter,
+    get_tenant_context,
+)
 
 logger = logging.getLogger()
 
@@ -27,17 +33,36 @@ _meter = get_meter("r2r.embedding")
 _embedding_words = _meter.create_counter(
     "r2r.embedding.words_total",
     unit="{word}",
-    description="Approximate word count sent to embedding model (not true tokens)",
+    description=(
+        "Approximate word count sent to embedding model "
+        "(not true tokens)"
+    ),
 )
-_embedding_duration = _meter.create_histogram(
+_embedding_duration = create_duration_histogram(
+    _meter,
     "r2r.embedding.duration_seconds",
-    unit="s",
     description="Embedding request duration",
 )
-_embedding_batch_size = _meter.create_histogram(
+_embedding_batch_size = create_count_histogram(
+    _meter,
     "r2r.embedding.batch_size",
-    unit="{text}",
     description="Number of texts per embedding batch request",
+    unit="{text}",
+)
+_embedding_retries = _meter.create_counter(
+    "r2r.embedding.retries_total",
+    unit="{retry}",
+    description="Total embedding request retries",
+)
+_embedding_failures = _meter.create_counter(
+    "r2r.embedding.failures_total",
+    unit="{failure}",
+    description="Total embedding request failures by error type",
+)
+_embedding_concurrent = _meter.create_up_down_counter(
+    "r2r.embedding.concurrent_requests",
+    unit="{request}",
+    description="Current number of in-flight embedding requests",
 )
 
 
@@ -82,6 +107,24 @@ class EmbeddingProvider(Provider):
         self.semaphore = asyncio.Semaphore(config.concurrent_request_limit)
         self.current_requests = 0
 
+    def _build_embedding_attrs(
+        self,
+        extra: dict[str, str] | None = None,
+    ) -> dict[str, str]:
+        """Build standard embedding metric attributes."""
+        model = getattr(self.config, "base_model", "unknown")
+        provider = getattr(self.config, "provider", "litellm")
+        ctx = get_tenant_context()
+        attrs = {
+            "org_id": ctx.get("org_id", ""),
+            "tenant_id": ctx.get("tenant_id", ""),
+            "gen_ai.request.model": model,
+            "gen_ai.system": provider,
+        }
+        if extra:
+            attrs.update(extra)
+        return attrs
+
     def _record_metrics_from_task(
         self, elapsed: float, task: dict[str, Any]
     ) -> None:
@@ -92,14 +135,8 @@ class EmbeddingProvider(Provider):
                 "texts", [task["text"]] if "text" in task else []
             )
             word_count = sum(len(t.split()) for t in texts)
-            model = getattr(self.config, "base_model", "unknown")
 
-            ctx = get_tenant_context()
-            attrs = {
-                "org_id": ctx.get("org_id", ""),
-                "tenant_id": ctx.get("tenant_id", ""),
-                "gen_ai.request.model": model,
-            }
+            attrs = self._build_embedding_attrs()
             _embedding_duration.record(elapsed, attrs)
             _embedding_words.add(word_count, attrs)
             if len(texts) > 1:
@@ -115,8 +152,18 @@ class EmbeddingProvider(Provider):
         _start = time.monotonic()
         while retries < self.config.max_retries:
             try:
-                async with self.semaphore:
-                    result = await self._execute_task(task)
+                try:
+                    _embedding_concurrent.add(1)
+                except Exception:
+                    pass
+                try:
+                    async with self.semaphore:
+                        result = await self._execute_task(task)
+                finally:
+                    try:
+                        _embedding_concurrent.add(-1)
+                    except Exception:
+                        pass
                 self._record_metrics_from_task(
                     time.monotonic() - _start, task
                 )
@@ -128,7 +175,24 @@ class EmbeddingProvider(Provider):
                     f"Request failed (attempt {retries + 1}): {str(e)}"
                 )
                 retries += 1
+                # Record retry metric
+                try:
+                    _embedding_retries.add(
+                        1, self._build_embedding_attrs(),
+                    )
+                except Exception:
+                    pass
                 if retries == self.config.max_retries:
+                    # Record failure with error type
+                    try:
+                        _embedding_failures.add(
+                            1,
+                            self._build_embedding_attrs(
+                                {"error_type": classify_error(e)},
+                            ),
+                        )
+                    except Exception:
+                        pass
                     raise
                 await asyncio.sleep(random.uniform(0, backoff))
                 backoff = min(backoff * 2, self.config.max_backoff)
@@ -139,7 +203,17 @@ class EmbeddingProvider(Provider):
         _start = time.monotonic()
         while retries < self.config.max_retries:
             try:
-                result = self._execute_task_sync(task)
+                try:
+                    _embedding_concurrent.add(1)
+                except Exception:
+                    pass
+                try:
+                    result = self._execute_task_sync(task)
+                finally:
+                    try:
+                        _embedding_concurrent.add(-1)
+                    except Exception:
+                        pass
                 self._record_metrics_from_task(
                     time.monotonic() - _start, task
                 )
@@ -151,7 +225,22 @@ class EmbeddingProvider(Provider):
                     f"Request failed (attempt {retries + 1}): {str(e)}"
                 )
                 retries += 1
+                try:
+                    _embedding_retries.add(
+                        1, self._build_embedding_attrs(),
+                    )
+                except Exception:
+                    pass
                 if retries == self.config.max_retries:
+                    try:
+                        _embedding_failures.add(
+                            1,
+                            self._build_embedding_attrs(
+                                {"error_type": classify_error(e)},
+                            ),
+                        )
+                    except Exception:
+                        pass
                     raise
                 time.sleep(random.uniform(0, backoff))
                 backoff = min(backoff * 2, self.config.max_backoff)

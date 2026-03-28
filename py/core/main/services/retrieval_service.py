@@ -56,7 +56,12 @@ from .base import Service
 
 import time
 
-from core.utils.otel_setup import get_meter, get_tenant_context
+from core.utils.otel_setup import (
+    create_count_histogram,
+    create_duration_histogram,
+    get_meter,
+    get_tenant_context,
+)
 
 logger = logging.getLogger()
 
@@ -67,15 +72,21 @@ _search_counter = _meter.create_counter(
     unit="{request}",
     description="Total search requests",
 )
-_search_duration = _meter.create_histogram(
+_search_duration = create_duration_histogram(
+    _meter,
     "r2r.search.duration_seconds",
-    unit="s",
     description="Search request duration",
 )
-_search_results_count = _meter.create_histogram(
+_search_results_count = create_count_histogram(
+    _meter,
     "r2r.search.results_count",
-    unit="{result}",
     description="Number of chunk search results returned per query",
+    unit="{result}",
+)
+_search_zero_results = _meter.create_counter(
+    "r2r.search.zero_results_total",
+    unit="{request}",
+    description="Total search requests that returned zero results",
 )
 
 
@@ -324,9 +335,13 @@ class RetrievalService(Service):
                     time.monotonic() - _search_start, _attrs
                 )
                 if result is not None:
+                    _n_results = len(result.chunk_search_results)
                     _search_results_count.record(
-                        len(result.chunk_search_results), _attrs
+                        _n_results, _attrs
                     )
+                    # Tier 3 #13: Track zero-result searches
+                    if _n_results == 0:
+                        _search_zero_results.add(1, _attrs)
             except Exception:
                 logger.debug(
                     "Failed to record search metrics",

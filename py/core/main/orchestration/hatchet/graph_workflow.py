@@ -25,11 +25,33 @@ from core.base.abstractions import (
     GraphExtractionStatus,
 )
 from core.utils import convert_nonserializable_objects
-from core.utils.otel_setup import set_tenant_context
+from core.utils.otel_setup import (
+    create_duration_histogram,
+    get_meter,
+    set_tenant_context,
+)
 
 from ...services import GraphService
 
 logger = logging.getLogger(__name__)
+
+# ── OTel Metrics for Graph Workflows (Tier 3 #14) ──
+_meter = get_meter("r2r.graph")
+_graph_entities = _meter.create_counter(
+    "r2r.graph.entities_total",
+    unit="{entity}",
+    description="Total graph entities extracted",
+)
+_graph_extraction_duration = create_duration_histogram(
+    _meter,
+    "r2r.graph.extraction_duration_seconds",
+    description="Graph extraction step duration",
+)
+_graph_extraction_status = _meter.create_counter(
+    "r2r.graph.extraction_status_total",
+    unit="{extraction}",
+    description="Graph extraction outcomes by status (success/failed/skipped)",
+)
 
 
 # ---------------------------------------------------------------------------
@@ -43,6 +65,9 @@ class GraphExtractionInput(BaseModel):
     collection_id: Optional[str] = None
     graph_creation_settings: Any = None
     user: Optional[str] = None
+    # Tier 1 #1: Tenant context propagated from ingestion workflow
+    org_id: Optional[str] = None
+    tenant_id: Optional[str] = None
 
 
 class GraphClusteringInput(BaseModel):
@@ -52,6 +77,8 @@ class GraphClusteringInput(BaseModel):
     graph_id: Optional[str] = None
     graph_enrichment_settings: Any = None
     user: Optional[str] = None
+    org_id: Optional[str] = None
+    tenant_id: Optional[str] = None
 
 
 class GraphCommunitySummarizationInput(BaseModel):
@@ -62,20 +89,41 @@ class GraphCommunitySummarizationInput(BaseModel):
     graph_id: Optional[str] = None
     collection_id: Optional[str] = None
     graph_enrichment_settings: Any = None
+    org_id: Optional[str] = None
+    tenant_id: Optional[str] = None
 
 
 class GraphDeduplicationInput(BaseModel):
     model_config = ConfigDict(extra="allow")
 
     document_id: Optional[str] = None
+    org_id: Optional[str] = None
+    tenant_id: Optional[str] = None
 
 
 # ---------------------------------------------------------------------------
-# Helpers (shared with simple workflows — pure logic, no Hatchet)
+# Helpers (shared with simple workflows -- pure logic, no Hatchet)
 # ---------------------------------------------------------------------------
+
+def _set_tenant_context_from_input(
+    input_obj: BaseModel,
+) -> None:
+    """Extract org_id/tenant_id from workflow input and set ContextVars.
+
+    Graph workflow inputs now carry org_id/tenant_id propagated from the
+    ingestion workflow that spawned them. This populates tenant context for
+    all downstream OTel metrics and spans.
+    """
+    org_id = getattr(input_obj, "org_id", None) or ""
+    tenant_id = getattr(input_obj, "tenant_id", None) or ""
+    set_tenant_context(
+        org_id=str(org_id),
+        tenant_id=str(tenant_id),
+    )
+
 
 def get_input_data_dict(input_data: dict, fast_llm: str = "") -> dict:
-    """Parse raw input dicts — coerce UUIDs and generation config."""
+    """Parse raw input dicts -- coerce UUIDs and generation config."""
     for key, value in input_data.items():
         if value is None:
             continue
@@ -114,6 +162,14 @@ def get_input_data_dict(input_data: dict, fast_llm: str = "") -> dict:
     return input_data
 
 
+def _get_tenant_attrs(input_obj: BaseModel) -> dict[str, str]:
+    """Build standard tenant attributes for graph metrics."""
+    return {
+        "org_id": str(getattr(input_obj, "org_id", None) or ""),
+        "tenant_id": str(getattr(input_obj, "tenant_id", None) or ""),
+    }
+
+
 # ---------------------------------------------------------------------------
 # Factory
 # ---------------------------------------------------------------------------
@@ -150,16 +206,15 @@ def hatchet_graph_search_results_factory(
     async def extraction(
         input: GraphExtractionInput, ctx: Context,
     ) -> dict:
-        # TODO(otel): Graph workflow input does not carry document
-        # metadata (org_id/tenant_id). To propagate tenant context
-        # here, either the caller must pass metadata through the
-        # workflow input, or we must look up the document to extract
-        # owner/org info. For now, tenant context will be empty in
-        # graph workflow spans/metrics.
+        # Tier 1 #1: Set tenant context from workflow input
+        _set_tenant_context_from_input(input)
+        _start = time.monotonic()
+
         request = input.model_dump()
         input_data = get_input_data_dict(request, fast_llm)
         document_id = input_data.get("document_id")
         collection_id = input_data.get("collection_id")
+        _attrs = _get_tenant_attrs(input)
 
         if collection_id and not document_id:
             # Fan-out: spawn one workflow per document in collection
@@ -176,6 +231,9 @@ def hatchet_graph_search_results_factory(
                     child_data["collection_id"]
                 )
                 child_data["document_id"] = str(doc_id)
+                # Propagate tenant context to child workflows
+                child_data["org_id"] = input.org_id or ""
+                child_data["tenant_id"] = input.tenant_id or ""
                 ref = await graph_extraction_wf.aio_run_no_wait(
                     convert_nonserializable_objects(child_data),
                     options=TriggerWorkflowOptions(
@@ -214,19 +272,43 @@ def hatchet_graph_search_results_factory(
             status=GraphExtractionStatus.PROCESSING,
         )
         extractions = []
-        async for ext in service.graph_search_results_extraction(
-            document_id=document_id,
-            **input_data["graph_creation_settings"],
-        ):
-            logger.info(
-                "Found extraction with %d entities",
-                len(ext.entities),
-            )
-            extractions.append(ext)
+        _status = "failed"
+        try:
+            async for ext in service.graph_search_results_extraction(
+                document_id=document_id,
+                **input_data["graph_creation_settings"],
+            ):
+                logger.info(
+                    "Found extraction with %d entities",
+                    len(ext.entities),
+                )
+                extractions.append(ext)
+                # Tier 3 #14: Count entities
+                try:
+                    _graph_entities.add(
+                        len(ext.entities), _attrs
+                    )
+                except Exception:
+                    pass
 
-        await service.store_graph_search_results_extractions(
-            extractions
-        )
+            await service.store_graph_search_results_extractions(
+                extractions
+            )
+            _status = "success"
+        except Exception:
+            _status = "failed"
+            raise
+        finally:
+            # Tier 3 #14: Record extraction duration and status
+            try:
+                _elapsed = time.monotonic() - _start
+                _graph_extraction_duration.record(_elapsed, _attrs)
+                _graph_extraction_status.add(
+                    1, {**_attrs, "status": _status}
+                )
+            except Exception:
+                pass
+
         logger.info(
             "Successfully ran graph extraction for document %s",
             document_id,
@@ -247,14 +329,16 @@ def hatchet_graph_search_results_factory(
     async def entity_description(
         input: GraphExtractionInput, ctx: Context,
     ) -> dict:
-        # TODO(otel): Same gap as extraction — no tenant context.
+        # Tier 1 #1: Set tenant context from workflow input
+        _set_tenant_context_from_input(input)
+
         # After a collection fan-out, the parent's entity_description
         # fires with the original (collection-level) input where
         # document_id is None.  Each child handles its own entity
         # description, so we no-op here.
         extraction_out = ctx.task_output(extraction)
         if extraction_out.get("fan_out"):
-            return {"result": "skipped — handled by fan-out children"}
+            return {"result": "skipped -- handled by fan-out children"}
 
         input_data = get_input_data_dict(
             input.model_dump(), fast_llm,
@@ -278,7 +362,11 @@ def hatchet_graph_search_results_factory(
             try:
                 dedup_wf = provider.get_workflow("graph-deduplication")
                 ref = await dedup_wf.aio_run_no_wait(
-                    {"document_id": str(document_id)},
+                    {
+                        "document_id": str(document_id),
+                        "org_id": input.org_id or "",
+                        "tenant_id": input.tenant_id or "",
+                    },
                 )
                 await asyncio.wait_for(
                     ref.aio_result(),
@@ -303,12 +391,21 @@ def hatchet_graph_search_results_factory(
     async def on_failure_extraction(
         input: GraphExtractionInput, ctx: Context,
     ) -> None:
+        _set_tenant_context_from_input(input)
         document_id = input.document_id
         if not document_id:
             logger.info(
                 "No document id in workflow input to mark failure."
             )
             return
+        # Record failure metric
+        try:
+            _graph_extraction_status.add(
+                1,
+                {**_get_tenant_attrs(input), "status": "failed"},
+            )
+        except Exception:
+            pass
         try:
             await service.providers.database.documents_handler.set_workflow_status(
                 id=uuid.UUID(document_id),
@@ -340,7 +437,7 @@ def hatchet_graph_search_results_factory(
     async def clustering(
         input: GraphClusteringInput, ctx: Context,
     ) -> dict:
-        # TODO(otel): No tenant context — see extraction step comment.
+        _set_tenant_context_from_input(input)
         logger.info("Running Graph Clustering")
         input_data = get_input_data_dict(
             input.model_dump(), fast_llm,
@@ -390,6 +487,7 @@ def hatchet_graph_search_results_factory(
     async def community_summary(
         input: GraphClusteringInput, ctx: Context,
     ) -> dict:
+        _set_tenant_context_from_input(input)
         input_data = get_input_data_dict(
             input.model_dump(), fast_llm,
         )
@@ -433,6 +531,8 @@ def hatchet_graph_search_results_factory(
                     "graph_enrichment_settings": convert_nonserializable_objects(
                         input_data["graph_enrichment_settings"]
                     ),
+                    "org_id": input.org_id or "",
+                    "tenant_id": input.tenant_id or "",
                 },
                 options=TriggerWorkflowOptions(
                     key=f"{i}/{total_workflows}_community_summary",
@@ -464,7 +564,7 @@ def hatchet_graph_search_results_factory(
             len(results) - len(failed), len(results),
         )
 
-        # Update statuses — only set SUCCESS when no failures
+        # Update statuses -- only set SUCCESS when no failures
         document_ids = (
             await service.providers.database.documents_handler.get_document_ids_by_status(
                 status_type="extraction_status",
@@ -507,6 +607,7 @@ def hatchet_graph_search_results_factory(
     async def on_failure_clustering(
         input: GraphClusteringInput, ctx: Context,
     ) -> None:
+        _set_tenant_context_from_input(input)
         collection_id = input.collection_id
         if collection_id:
             try:
@@ -540,7 +641,7 @@ def hatchet_graph_search_results_factory(
     async def summarize_communities(
         input: GraphCommunitySummarizationInput, ctx: Context,
     ) -> dict:
-        # TODO(otel): No tenant context — see extraction step comment.
+        _set_tenant_context_from_input(input)
         start_time = time.time()
         input_data = get_input_data_dict(
             input.model_dump(), fast_llm,
@@ -595,7 +696,7 @@ def hatchet_graph_search_results_factory(
     async def deduplicate(
         input: GraphDeduplicationInput, ctx: Context,
     ) -> dict:
-        # TODO(otel): No tenant context — see extraction step comment.
+        _set_tenant_context_from_input(input)
         start_time = time.time()
         input_data = get_input_data_dict(
             input.model_dump(), fast_llm,

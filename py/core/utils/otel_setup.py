@@ -21,6 +21,7 @@ Usage:
     setup_opentelemetry(app, "r2r")
 """
 
+import asyncio
 import logging
 import os
 from contextvars import ContextVar
@@ -196,6 +197,112 @@ class NoOpHistogram:
         pass
 
 
+# ── Histogram Bucket Boundaries ──
+# Pre-defined bucket boundaries for common metric types.
+# These provide meaningful resolution for Grafana dashboards and alerting.
+
+# Duration in seconds: covers fast API calls (<10ms) through long-running
+# ingestion pipelines (up to 5 minutes).
+DURATION_SECONDS_BUCKETS: list[float] = [
+    0.01, 0.05, 0.1, 0.25, 0.5, 1.0, 2.5, 5.0,
+    10.0, 30.0, 60.0, 120.0, 300.0,
+]
+
+# Document/payload sizes: 1KB through 100MB.
+BYTES_BUCKETS: list[float] = [
+    1024, 10240, 102400, 1_048_576,
+    10_485_760, 52_428_800, 104_857_600,
+]
+
+# Counts (results, chunks, entities, etc.): 0 through 1000.
+COUNT_BUCKETS: list[float] = [
+    0, 1, 5, 10, 25, 50, 100, 250, 500, 1000,
+]
+
+# TODO(otel/Tier1#3): Add Prometheus recording rules in Helm chart for
+# pre-aggregated per-tenant rate/error/duration summaries. This avoids
+# high-cardinality queries at dashboard time.
+
+# TODO(otel/Tier1#4): Add alerting rules in Helm chart for:
+# - r2r.ingestion.documents_total{status="failure"} rate > threshold
+# - r2r.llm.duration_seconds p99 > SLA
+# - r2r.search.zero_results_total rate spike
+
+# TODO(otel/Tier2#9): Configure OTel Collector with tail-based trace
+# sampling (sample errors + high-latency, drop routine fast requests).
+
+# TODO(otel/Tier2#10): Deploy OTel Collector as a DaemonSet via Helm
+# with OTLP receivers, Prometheus remote-write, and Loki exporters.
+
+# TODO(otel/Tier4#17): Add network policies and mTLS for OTel Collector
+# traffic in Helm chart.
+
+
+def create_duration_histogram(
+    meter: Any,
+    name: str,
+    description: str = "",
+    unit: str = "s",
+) -> Any:
+    """Create a histogram with duration-appropriate bucket boundaries.
+
+    Uses the OTel SDK ``explicit_bucket_boundaries_advisory`` parameter
+    when available, otherwise falls back to the default bucket set.
+    """
+    try:
+        return meter.create_histogram(
+            name,
+            unit=unit,
+            description=description,
+            explicit_bucket_boundaries_advisory=DURATION_SECONDS_BUCKETS,
+        )
+    except TypeError:
+        # Fallback for older SDK or NoOp meter that doesn't accept the kwarg
+        return meter.create_histogram(
+            name, unit=unit, description=description,
+        )
+
+
+def create_bytes_histogram(
+    meter: Any,
+    name: str,
+    description: str = "",
+    unit: str = "By",
+) -> Any:
+    """Create a histogram with byte-size-appropriate bucket boundaries."""
+    try:
+        return meter.create_histogram(
+            name,
+            unit=unit,
+            description=description,
+            explicit_bucket_boundaries_advisory=BYTES_BUCKETS,
+        )
+    except TypeError:
+        return meter.create_histogram(
+            name, unit=unit, description=description,
+        )
+
+
+def create_count_histogram(
+    meter: Any,
+    name: str,
+    description: str = "",
+    unit: str = "{count}",
+) -> Any:
+    """Create a histogram with count-appropriate bucket boundaries."""
+    try:
+        return meter.create_histogram(
+            name,
+            unit=unit,
+            description=description,
+            explicit_bucket_boundaries_advisory=COUNT_BUCKETS,
+        )
+    except TypeError:
+        return meter.create_histogram(
+            name, unit=unit, description=description,
+        )
+
+
 # ── Setup ──
 
 def setup_opentelemetry(
@@ -306,3 +413,93 @@ def get_meter(name: str):
         return NoOpMeter()
     from opentelemetry import metrics
     return metrics.get_meter(name)
+
+
+# ── Error Categorization Helper ──
+
+def classify_error(exc: Exception) -> str:
+    """Classify an exception into an error category for metrics.
+
+    Returns one of: rate_limit, auth_error, timeout, parse_error,
+    provider_error, unknown.
+    """
+    exc_type_name = type(exc).__name__.lower()
+    exc_msg = str(exc).lower()
+
+    # Rate limiting (HTTP 429 or explicit message)
+    if "429" in exc_msg or "rate limit" in exc_msg or "rate_limit" in exc_msg:
+        return "rate_limit"
+
+    # Authentication/authorization errors
+    if (
+        "401" in exc_msg
+        or "403" in exc_msg
+        or "auth" in exc_type_name
+        or "authentication" in exc_msg
+        or "unauthorized" in exc_msg
+        or "forbidden" in exc_msg
+    ):
+        return "auth_error"
+
+    # Timeout errors
+    if isinstance(exc, (TimeoutError, asyncio.TimeoutError)):
+        return "timeout"
+    if "timeout" in exc_type_name or "timeout" in exc_msg:
+        return "timeout"
+
+    # Parse errors (ingestion-specific)
+    if (
+        "parse" in exc_type_name
+        or "decode" in exc_type_name
+        or "json" in exc_type_name
+        or "parsing" in exc_msg
+    ):
+        return "parse_error"
+
+    # Provider/API errors (generic remote service failures)
+    if (
+        "api" in exc_type_name
+        or "provider" in exc_type_name
+        or "500" in exc_msg
+        or "502" in exc_msg
+        or "503" in exc_msg
+        or "service unavailable" in exc_msg
+    ):
+        return "provider_error"
+
+    return "unknown"
+
+
+# ── Tier 4 Backlog TODOs ──
+#
+# TODO(otel/Tier4#18): Add cache hit/miss metrics for embedding cache
+#   and prompt cache (r2r.cache.hits_total, r2r.cache.misses_total).
+#   Files: core/providers/embedding_cache.py (if added)
+#
+# TODO(otel/Tier4#19): Add queue depth metrics for Hatchet task queues
+#   (r2r.queue.depth gauge). Requires Hatchet SDK queue introspection
+#   or polling the Hatchet API.
+#
+# TODO(otel/Tier4#20): Add memory/CPU process metrics via
+#   opentelemetry-instrumentation-system-metrics or psutil gauges.
+#
+# TODO(otel/Tier4#21): Add database connection pool metrics
+#   (r2r.db.pool_size, r2r.db.pool_available, r2r.db.pool_waiting).
+#   Files: core/providers/database/postgres.py
+#
+# TODO(otel/Tier4#22): Add per-collection ingestion metrics
+#   (r2r.ingestion.collection_documents_total). Requires collection_id
+#   attribute on ingestion counters.
+#
+# TODO(otel/Tier4#23): Add chunk enrichment metrics
+#   (r2r.enrichment.chunks_total, r2r.enrichment.duration_seconds).
+#   Files: core/main/services/ingestion_service.py
+#
+# TODO(otel/Tier4#24): Add reranking metrics
+#   (r2r.rerank.duration_seconds, r2r.rerank.results_reordered).
+#   Files: core/base/providers/embedding.py
+#
+# TODO(otel/Tier4#25): Add user-facing latency histogram
+#   (r2r.api.request_duration_seconds) with route and status_code
+#   attributes. Auto-instrumentation covers this partially but custom
+#   buckets and tenant attribution would improve dashboards.
