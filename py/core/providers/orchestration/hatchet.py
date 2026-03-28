@@ -24,6 +24,7 @@ class HatchetOrchestrationProvider(OrchestrationProvider):
         self._workflows: dict[str, Any] = {}
         self._worker_name: str = "r2r-worker"
         self._worker_slots: int = config.max_runs
+        self._worker_task: Optional[asyncio.Task] = None
 
     # ------------------------------------------------------------------
     # Worker lifecycle (deferred — v1 needs workflows at construction)
@@ -33,7 +34,7 @@ class HatchetOrchestrationProvider(OrchestrationProvider):
         self, name: str, max_runs: Optional[int] = None,
     ) -> Any:
         self._worker_name = name
-        if max_runs:
+        if max_runs is not None:
             self._worker_slots = max_runs
         return self  # placeholder — real worker created in start_worker
 
@@ -49,7 +50,9 @@ class HatchetOrchestrationProvider(OrchestrationProvider):
             slots=self._worker_slots,
             workflows=list(self._workflows.values()),
         )
-        asyncio.create_task(self.worker.async_start())
+        self._worker_task = asyncio.create_task(
+            self.worker.async_start()
+        )
 
     # ------------------------------------------------------------------
     # Workflow registration

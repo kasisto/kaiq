@@ -7,7 +7,6 @@ from datetime import timedelta
 from typing import Any, Optional
 from uuid import UUID
 
-from fastapi import HTTPException
 from hatchet_sdk import (
     ConcurrencyExpression,
     ConcurrencyLimitStrategy,
@@ -34,7 +33,7 @@ from core.utils import (
 
 from ...services import IngestionService, IngestionServiceAdapter
 
-logger = logging.getLogger()
+logger = logging.getLogger(__name__)
 
 
 # ---------------------------------------------------------------------------
@@ -48,10 +47,10 @@ def extract_user_id(data: dict) -> str:
         if isinstance(user, str) and user:
             user = json.loads(user)
         if isinstance(user, dict):
-            return str(user.get("id", str(uuid.uuid4())))
+            return str(user.get("id", "unknown"))
     except Exception:
         pass
-    return str(uuid.uuid4())
+    return "unknown"
 
 
 def should_skip_graph_extraction(
@@ -254,6 +253,22 @@ def hatchet_ingestion_factory(
             else:
                 for cid_str in collection_ids:
                     coll_id = UUID(cid_str)
+                    try:
+                        name = document_info.title or "N/A"
+                        await service.providers.database.collections_handler.create_collection(
+                            owner_id=document_info.owner_id,
+                            name=name, description="",
+                            collection_id=coll_id,
+                        )
+                        await service.providers.database.graphs_handler.create(
+                            collection_id=coll_id,
+                            name=name, description="",
+                            graph_id=coll_id,
+                        )
+                    except Exception as e:
+                        logger.warning(
+                            "Could not create collection: %s", e,
+                        )
                     await _assign_doc_to_collection(
                         service, document_info, coll_id,
                     )
@@ -282,9 +297,11 @@ def hatchet_ingestion_factory(
                 "or credentials.",
             ) from None
         except Exception as e:
-            raise HTTPException(
+            if isinstance(e, R2RException):
+                raise
+            raise R2RException(
                 status_code=500,
-                detail=f"Error during ingestion: {str(e)}",
+                message=f"Error during ingestion: {e}",
             ) from e
 
     @ingest_files_wf.on_failure_task()
@@ -316,11 +333,20 @@ def hatchet_ingestion_factory(
         )
         document_id = document_info.id
 
+        raw_coll_ids = parsed_data.get("collection_ids") or []
+        if isinstance(raw_coll_ids, str):
+            raw_coll_ids = [raw_coll_ids]
+        collection_ids = [UUID(cid) for cid in raw_coll_ids]
+
         extractions = [
             DocumentChunk(
-                id=generate_extraction_id(document_id, i),
+                id=(
+                    chunk.id
+                    if chunk.id is not None
+                    else generate_extraction_id(document_id, i)
+                ),
                 document_id=document_id,
-                collection_ids=[],
+                collection_ids=collection_ids,
                 owner_id=document_info.owner_id,
                 data=chunk.text,
                 metadata=parsed_data["metadata"],
@@ -480,9 +506,11 @@ def hatchet_ingestion_factory(
                 "document_ids": [str(document_uuid)],
             }
         except Exception as e:
-            raise HTTPException(
+            if isinstance(e, R2RException):
+                raise
+            raise R2RException(
                 status_code=500,
-                detail=f"Error during chunk update: {str(e)}",
+                message=f"Error during chunk update: {e}",
             ) from e
 
     @update_chunk_wf.on_failure_task()
@@ -698,7 +726,7 @@ async def _handle_ingestion_failure(
         docs = (
             await service.providers.database.documents_handler.get_documents_overview(
                 offset=0, limit=1,
-                filter_document_ids=[document_id],
+                filter_document_ids=[UUID(document_id)],
             )
         )["results"]
 

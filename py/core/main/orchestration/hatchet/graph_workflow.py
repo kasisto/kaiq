@@ -8,6 +8,8 @@ import uuid
 from datetime import timedelta
 from typing import Any, Optional
 
+import copy
+
 from hatchet_sdk import (
     ConcurrencyExpression,
     ConcurrencyLimitStrategy,
@@ -15,7 +17,7 @@ from hatchet_sdk import (
     Hatchet,
     TriggerWorkflowOptions,
 )
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict
 
 from core import GenerationConfig
 from core.base import OrchestrationProvider, R2RException
@@ -27,7 +29,7 @@ from core.utils import convert_nonserializable_objects
 
 from ...services import GraphService
 
-logger = logging.getLogger()
+logger = logging.getLogger(__name__)
 
 
 # ---------------------------------------------------------------------------
@@ -136,7 +138,7 @@ def hatchet_graph_search_results_factory(
         name="graph-extraction",
         input_validator=GraphExtractionInput,
         concurrency=ConcurrencyExpression(
-            expression="input.collection_id",
+            expression="input.document_id ?? input.collection_id",
             max_runs=config.graph_search_results_concurrency_limit,
             limit_strategy=ConcurrencyLimitStrategy.GROUP_ROUND_ROBIN,
         ),
@@ -153,12 +155,6 @@ def hatchet_graph_search_results_factory(
         document_id = input_data.get("document_id")
         collection_id = input_data.get("collection_id")
 
-        await service.providers.database.documents_handler.set_workflow_status(
-            id=document_id,
-            status_type="extraction_status",
-            status=GraphExtractionStatus.PROCESSING,
-        )
-
         if collection_id and not document_id:
             # Fan-out: spawn one workflow per document in collection
             document_ids = (
@@ -169,7 +165,7 @@ def hatchet_graph_search_results_factory(
             )
             refs = []
             for doc_id in document_ids:
-                child_data = input_data.copy()
+                child_data = copy.deepcopy(input_data)
                 child_data["collection_id"] = str(
                     child_data["collection_id"]
                 )
@@ -186,21 +182,31 @@ def hatchet_graph_search_results_factory(
                 *[r.aio_result() for r in refs],
                 return_exceptions=True,
             )
-            for i, r in enumerate(results):
-                if isinstance(r, Exception):
-                    logger.error(
-                        "Graph extraction workflow %d failed: %s",
-                        i, r,
-                    )
+            failed = [r for r in results if isinstance(r, Exception)]
+            for r in failed:
+                logger.error(
+                    "Graph extraction child workflow failed: %s", r,
+                )
+            if len(failed) == len(results) and results:
+                raise RuntimeError(
+                    f"All {len(results)} graph extraction "
+                    f"workflows failed for collection {collection_id}"
+                )
             return {
                 "result": (
                     "successfully submitted graph extraction "
                     f"for collection {collection_id}"
                 ),
                 "document_id": str(collection_id),
+                "fan_out": True,
             }
 
         # Single-document extraction
+        await service.providers.database.documents_handler.set_workflow_status(
+            id=document_id,
+            status_type="extraction_status",
+            status=GraphExtractionStatus.PROCESSING,
+        )
         extractions = []
         async for ext in service.graph_search_results_extraction(
             document_id=document_id,
@@ -235,6 +241,14 @@ def hatchet_graph_search_results_factory(
     async def entity_description(
         input: GraphExtractionInput, ctx: Context,
     ) -> dict:
+        # After a collection fan-out, the parent's entity_description
+        # fires with the original (collection-level) input where
+        # document_id is None.  Each child handles its own entity
+        # description, so we no-op here.
+        extraction_out = ctx.task_output(extraction)
+        if extraction_out.get("fan_out"):
+            return {"result": "skipped — handled by fan-out children"}
+
         input_data = get_input_data_dict(
             input.model_dump(), fast_llm,
         )
@@ -254,16 +268,22 @@ def hatchet_graph_search_results_factory(
             .graph_creation_settings.automatic_deduplication
         )
         if auto_dedup:
-            dedup_wf = provider.get_workflow("graph-deduplication")
-            ref = await dedup_wf.aio_run_no_wait(
-                {"document_id": str(document_id)},
-            )
-            await asyncio.wait_for(
-                ref.aio_result(),
-                timeout=float(
-                    os.environ.get("GRAPH_DEDUP_TIMEOUT", "3600")
-                ),
-            )
+            try:
+                dedup_wf = provider.get_workflow("graph-deduplication")
+                ref = await dedup_wf.aio_run_no_wait(
+                    {"document_id": str(document_id)},
+                )
+                await asyncio.wait_for(
+                    ref.aio_result(),
+                    timeout=float(
+                        os.environ.get("GRAPH_DEDUP_TIMEOUT", "3600")
+                    ),
+                )
+            except Exception as e:
+                logger.error(
+                    "Auto-dedup failed for document %s (extraction "
+                    "itself succeeded): %s", document_id, e,
+                )
 
         return {
             "result": (
@@ -424,12 +444,19 @@ def hatchet_graph_search_results_factory(
             )
             for f in failed:
                 logger.error("Community summary error: %s", f)
+
+        if len(failed) == len(results) and results:
+            raise RuntimeError(
+                f"All {len(results)} community summary workflows "
+                f"failed for collection {collection_id}"
+            )
+
         logger.info(
             "Completed %d/%d community summary workflows",
             len(results) - len(failed), len(results),
         )
 
-        # Update statuses
+        # Update statuses — only set SUCCESS when no failures
         document_ids = (
             await service.providers.database.documents_handler.get_document_ids_by_status(
                 status_type="extraction_status",
@@ -442,11 +469,24 @@ def hatchet_graph_search_results_factory(
             status_type="extraction_status",
             status=GraphExtractionStatus.ENRICHED,
         )
+        final_status = (
+            GraphConstructionStatus.SUCCESS
+            if not failed
+            else GraphConstructionStatus.FAILED
+        )
         await service.providers.database.documents_handler.set_workflow_status(
             id=collection_id,
             status_type="graph_cluster_status",
-            status=GraphConstructionStatus.SUCCESS,
+            status=final_status,
         )
+
+        if failed:
+            return {
+                "result": (
+                    f"Partial failure: {len(failed)}/{len(results)} "
+                    "community summary workflows failed"
+                ),
+            }
 
         return {
             "result": (

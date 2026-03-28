@@ -7,7 +7,6 @@ from litellm import AuthenticationError
 
 from core.base import (
     DocumentChunk,
-    GraphConstructionStatus,
     GraphExtractionStatus,
     R2RException,
 )
@@ -20,12 +19,11 @@ from core.utils import (
 from ...services import IngestionService
 from ..hatchet.ingestion_workflow import (  # type: ignore[attr-defined]
     _assign_doc_to_collection,
-    _mark_graph_outdated,
     _maybe_enrich_chunks,
     should_skip_graph_extraction,
 )
 
-logger = logging.getLogger()
+logger = logging.getLogger(__name__)
 
 
 def simple_ingestion_factory(service: IngestionService):
@@ -167,7 +165,8 @@ def simple_ingestion_factory(service: IngestionService):
                         status=GraphExtractionStatus.SUCCESS,
                     )
                     logger.info(
-                        f"Graph extraction skipped for document {document_info.id}"
+                        "Graph extraction skipped for document %s",
+                        document_info.id,
                     )
 
         except AuthenticationError as e:
@@ -175,7 +174,7 @@ def simple_ingestion_factory(service: IngestionService):
                 await service.update_document_status(
                     document_info,
                     status=IngestionStatus.FAILED,
-                    metadata={"failure": f"{str(e)}"},
+                    metadata={"failure": str(e)},
                 )
             raise R2RException(
                 status_code=401,
@@ -186,7 +185,7 @@ def simple_ingestion_factory(service: IngestionService):
                 await service.update_document_status(
                     document_info,
                     status=IngestionStatus.FAILED,
-                    metadata={"failure": f"{str(e)}"},
+                    metadata={"failure": str(e)},
                 )
             if isinstance(e, R2RException):
                 raise
@@ -287,6 +286,8 @@ def simple_ingestion_factory(service: IngestionService):
                             message="Automatic extraction not yet implemented for `simple` ingestion workflows.",
                         ) from None
 
+            except R2RException:
+                raise
             except Exception as e:
                 logger.error(
                     "Error assigning document to collection: %s", e,
@@ -297,8 +298,10 @@ def simple_ingestion_factory(service: IngestionService):
                 await service.update_document_status(
                     document_info,
                     status=IngestionStatus.FAILED,
-                    metadata={"failure": f"{str(e)}"},
+                    metadata={"failure": str(e)},
                 )
+            if isinstance(e, R2RException):
+                raise
             raise HTTPException(
                 status_code=500,
                 detail=f"Error during chunk ingestion: {str(e)}",

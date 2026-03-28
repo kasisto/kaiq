@@ -10,7 +10,7 @@ from core.base.abstractions import (
 from ..hatchet.graph_workflow import get_input_data_dict
 from ...services import GraphService
 
-logger = logging.getLogger()
+logger = logging.getLogger(__name__)
 
 
 def simple_graph_search_results_factory(service: GraphService):
