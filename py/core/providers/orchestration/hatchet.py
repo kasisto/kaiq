@@ -1,7 +1,6 @@
-# FIXME: Once the Hatchet workflows are type annotated, remove the type: ignore comments
 import asyncio
 import logging
-from typing import Any, Callable, Optional
+from typing import Any, Optional
 
 from core.base import OrchestrationConfig, OrchestrationProvider, Workflow
 
@@ -12,47 +11,91 @@ class HatchetOrchestrationProvider(OrchestrationProvider):
     def __init__(self, config: OrchestrationConfig):
         super().__init__(config)
         try:
-            from hatchet_sdk import ClientConfig, Hatchet
+            from hatchet_sdk import Hatchet
         except ImportError:
             raise ImportError(
-                "Hatchet SDK not installed. Please install it using `pip install hatchet-sdk`."
+                "Hatchet SDK not installed. Please install it with "
+                "`pip install hatchet-sdk`."
             ) from None
-        root_logger = logging.getLogger()
 
-        self.orchestrator = Hatchet(
-            config=ClientConfig(
-                logger=root_logger,
-            ),
-        )
-        self.root_logger = root_logger
+        self.orchestrator = Hatchet()
         self.config: OrchestrationConfig = config
         self.messages: dict[str, str] = {}
+        self._workflows: dict[str, Any] = {}
+        self._worker_name: str = "r2r-worker"
+        self._worker_slots: int = config.max_runs
 
-    def workflow(self, *args, **kwargs) -> Callable:
-        return self.orchestrator.workflow(*args, **kwargs)
+    # ------------------------------------------------------------------
+    # Worker lifecycle (deferred — v1 needs workflows at construction)
+    # ------------------------------------------------------------------
 
-    def step(self, *args, **kwargs) -> Callable:
-        return self.orchestrator.step(*args, **kwargs)
-
-    def failure(self, *args, **kwargs) -> Callable:
-        return self.orchestrator.on_failure_step(*args, **kwargs)
-
-    def get_worker(self, name: str, max_runs: Optional[int] = None) -> Any:
-        if not max_runs:
-            max_runs = self.config.max_runs
-        self.worker = self.orchestrator.worker(name, max_runs)  # type: ignore
-        return self.worker
-
-    def concurrency(self, *args, **kwargs) -> Callable:
-        return self.orchestrator.concurrency(*args, **kwargs)
+    def get_worker(
+        self, name: str, max_runs: Optional[int] = None,
+    ) -> Any:
+        self._worker_name = name
+        if max_runs:
+            self._worker_slots = max_runs
+        return self  # placeholder — real worker created in start_worker
 
     async def start_worker(self):
-        if not self.worker:
+        if not self._workflows:
             raise ValueError(
-                "Worker not initialized. Call get_worker() first."
+                "No workflows registered. "
+                "Call register_workflows() before start_worker()."
             )
 
+        self.worker = self.orchestrator.worker(
+            self._worker_name,
+            slots=self._worker_slots,
+            workflows=list(self._workflows.values()),
+        )
         asyncio.create_task(self.worker.async_start())
+
+    # ------------------------------------------------------------------
+    # Workflow registration
+    # ------------------------------------------------------------------
+
+    def register_workflows(
+        self, workflow: Workflow, service: Any, messages: dict,
+    ) -> None:
+        self.messages.update(messages)
+
+        logger.info(
+            "Registering workflows for %s with messages %s.",
+            workflow, messages,
+        )
+
+        if workflow == Workflow.INGESTION:
+            from core.main.orchestration.hatchet.ingestion_workflow import (
+                hatchet_ingestion_factory,
+            )
+            wfs = hatchet_ingestion_factory(
+                self.orchestrator, service, self.config, self,
+            )
+            self._workflows.update(wfs)
+
+        elif workflow == Workflow.GRAPH:
+            from core.main.orchestration.hatchet.graph_workflow import (
+                hatchet_graph_search_results_factory,
+            )
+            wfs = hatchet_graph_search_results_factory(
+                self.orchestrator, service, self.config, self,
+            )
+            self._workflows.update(wfs)
+
+    # ------------------------------------------------------------------
+    # Workflow lookup (for child spawning from within tasks)
+    # ------------------------------------------------------------------
+
+    def get_workflow(self, name: str) -> Any:
+        wf = self._workflows.get(name)
+        if wf is None:
+            raise ValueError(f"Workflow '{name}' not registered yet.")
+        return wf
+
+    # ------------------------------------------------------------------
+    # Trigger a workflow run
+    # ------------------------------------------------------------------
 
     async def run_workflow(
         self,
@@ -62,44 +105,37 @@ class HatchetOrchestrationProvider(OrchestrationProvider):
         *args,
         **kwargs,
     ) -> Any:
-        task_id = self.orchestrator.admin.run_workflow(  # type: ignore
-            workflow_name,
-            parameters,
-            options=options,  # type: ignore
-            *args,
-            **kwargs,
+        wf = self._workflows.get(workflow_name)
+        if wf is None:
+            raise ValueError(f"Workflow '{workflow_name}' not found.")
+
+        input_data = dict(parameters.get("request", {}))
+
+        # Hoist user_id for CEL concurrency expressions.  The routers
+        # pass the user as a JSON string; the CEL expression needs
+        # ``input.user_id`` at the top level.
+        if "user" in input_data and "user_id" not in input_data:
+            from core.main.orchestration.hatchet.ingestion_workflow import (
+                extract_user_id,
+            )
+            input_data["user_id"] = extract_user_id(input_data)
+
+        from hatchet_sdk import TriggerWorkflowOptions
+
+        trigger_opts = None
+        if options and options.get("additional_metadata"):
+            trigger_opts = TriggerWorkflowOptions(
+                additional_metadata=options["additional_metadata"],
+            )
+
+        ref = await wf.aio_run_no_wait(
+            input_data, options=trigger_opts,
         )
+
+        task_id = getattr(ref, "workflow_run_id", None) or str(ref)
         return {
             "task_id": str(task_id),
             "message": self.messages.get(
                 workflow_name, "Workflow queued successfully."
-            ),  # Return message based on workflow name
+            ),
         }
-
-    def register_workflows(
-        self, workflow: Workflow, service: Any, messages: dict
-    ) -> None:
-        self.messages.update(messages)
-
-        logger.info(
-            f"Registering workflows for {workflow} with messages {messages}."
-        )
-        if workflow == Workflow.INGESTION:
-            from core.main.orchestration.hatchet.ingestion_workflow import (  # type: ignore
-                hatchet_ingestion_factory,
-            )
-
-            workflows = hatchet_ingestion_factory(self, service)
-            if self.worker:
-                for workflow in workflows.values():
-                    self.worker.register_workflow(workflow)
-
-        elif workflow == Workflow.GRAPH:
-            from core.main.orchestration.hatchet.graph_workflow import (  # type: ignore
-                hatchet_graph_search_results_factory,
-            )
-
-            workflows = hatchet_graph_search_results_factory(self, service)
-            if self.worker:
-                for workflow in workflows.values():
-                    self.worker.register_workflow(workflow)

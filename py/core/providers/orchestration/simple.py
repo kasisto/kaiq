@@ -1,4 +1,4 @@
-from typing import Any
+from typing import Any, Optional
 
 from core.base import OrchestrationConfig, OrchestrationProvider, Workflow
 
@@ -8,20 +8,13 @@ class SimpleOrchestrationProvider(OrchestrationProvider):
         super().__init__(config)
         self.config = config
         self.messages: dict[str, str] = {}
+        self.ingestion_workflows: dict[str, Any] = {}
+        self.graph_search_results_workflows: dict[str, Any] = {}
 
     async def start_worker(self):
         pass
 
-    def get_worker(self, name: str, max_runs: int) -> Any:
-        pass
-
-    def step(self, *args, **kwargs) -> Any:
-        pass
-
-    def workflow(self, *args, **kwargs) -> Any:
-        pass
-
-    def failure(self, *args, **kwargs) -> Any:
+    def get_worker(self, name: str, max_runs: Optional[int] = None) -> Any:
         pass
 
     def register_workflows(

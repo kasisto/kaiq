@@ -1,75 +1,26 @@
-import json
 import logging
 import math
-import uuid
 
-from core import GenerationConfig, R2RException
+from core import R2RException
 from core.base.abstractions import (
     GraphConstructionStatus,
     GraphExtractionStatus,
 )
 
+from ..hatchet.graph_workflow import get_input_data_dict
 from ...services import GraphService
 
 logger = logging.getLogger()
 
 
 def simple_graph_search_results_factory(service: GraphService):
-    def get_input_data_dict(input_data):
-        for key, value in input_data.items():
-            if value is None:
-                continue
-
-            if key == "document_id":
-                input_data[key] = (
-                    uuid.UUID(value)
-                    if not isinstance(value, uuid.UUID)
-                    else value
-                )
-
-            if key == "collection_id":
-                input_data[key] = (
-                    uuid.UUID(value)
-                    if not isinstance(value, uuid.UUID)
-                    else value
-                )
-
-            if key == "graph_id":
-                input_data[key] = (
-                    uuid.UUID(value)
-                    if not isinstance(value, uuid.UUID)
-                    else value
-                )
-
-            if key in ["graph_creation_settings", "graph_enrichment_settings"]:
-                # Ensure we have a dict (if not already)
-                input_data[key] = (
-                    json.loads(value) if not isinstance(value, dict) else value
-                )
-
-                if "generation_config" in input_data[key]:
-                    if isinstance(input_data[key]["generation_config"], dict):
-                        input_data[key]["generation_config"] = (
-                            GenerationConfig(
-                                **input_data[key]["generation_config"]
-                            )
-                        )
-                    elif not isinstance(
-                        input_data[key]["generation_config"], GenerationConfig
-                    ):
-                        input_data[key]["generation_config"] = (
-                            GenerationConfig()
-                        )
-
-                    input_data[key]["generation_config"].model = (
-                        input_data[key]["generation_config"].model
-                        or service.config.app.fast_llm
-                    )
-
-        return input_data
+    fast_llm = getattr(
+        getattr(service, "config", None), "app", None
+    )
+    fast_llm = getattr(fast_llm, "fast_llm", "") if fast_llm else ""
 
     async def graph_extraction(input_data):
-        input_data = get_input_data_dict(input_data)
+        input_data = get_input_data_dict(input_data, fast_llm)
 
         if input_data.get("document_id"):
             document_ids = [input_data.get("document_id")]
@@ -147,7 +98,7 @@ def simple_graph_search_results_factory(service: GraphService):
                 raise e
 
     async def graph_clustering(input_data):
-        input_data = get_input_data_dict(input_data)
+        input_data = get_input_data_dict(input_data, fast_llm)
         workflow_status = await service.providers.database.documents_handler.get_workflow_status(
             id=input_data.get("collection_id", None),
             status_type="graph_cluster_status",
@@ -210,7 +161,7 @@ def simple_graph_search_results_factory(service: GraphService):
             raise e
 
     async def graph_deduplication(input_data):
-        input_data = get_input_data_dict(input_data)
+        input_data = get_input_data_dict(input_data, fast_llm)
         await service.deduplicate_document_entities(
             document_id=input_data.get("document_id", None),
         )

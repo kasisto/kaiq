@@ -93,7 +93,7 @@ services:
       - ./env/hatchet.env
 
   hatchet-migration:
-    image: ghcr.io/hatchet-dev/hatchet/hatchet-migrate:v0.53.15
+    image: ghcr.io/hatchet-dev/hatchet/hatchet-migrate:v0.79.14
     env_file:
       - ./env/hatchet.env
     depends_on:
@@ -101,7 +101,7 @@ services:
         condition: service_completed_successfully
 
   hatchet-setup-config:
-    image: ghcr.io/hatchet-dev/hatchet/hatchet-admin:v0.53.15
+    image: ghcr.io/hatchet-dev/hatchet/hatchet-admin:v0.79.14
     command: /hatchet/hatchet-admin quickstart --skip certs --generated-config-dir /hatchet/config --overwrite=false
     env_file:
       - ./env/hatchet.env
@@ -115,7 +115,7 @@ services:
         condition: service_healthy
 
   hatchet-engine:
-    image: ghcr.io/hatchet-dev/hatchet/hatchet-engine:v0.53.15
+    image: ghcr.io/hatchet-dev/hatchet/hatchet-engine:v0.79.14
     command: /hatchet/hatchet-engine --config /hatchet/config
     restart: on-failure
     depends_on:
@@ -135,7 +135,7 @@ services:
       retries: 5
 
   hatchet-dashboard:
-    image: ghcr.io/hatchet-dev/hatchet/hatchet-dashboard:v0.53.15
+    image: ghcr.io/hatchet-dev/hatchet/hatchet-dashboard:v0.79.14
     command: sh ./entrypoint.sh --config /hatchet/config
     restart: on-failure
     depends_on:
@@ -150,7 +150,7 @@ services:
       - "7274:80"
 
   setup-token:
-    image: ghcr.io/hatchet-dev/hatchet/hatchet-admin:v0.53.15
+    image: ghcr.io/hatchet-dev/hatchet/hatchet-admin:v0.79.14
     command: sh /scripts/setup-token.sh
     volumes:
       - ./scripts:/scripts

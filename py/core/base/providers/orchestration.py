@@ -1,6 +1,6 @@
 from abc import abstractmethod
 from enum import Enum
-from typing import Any
+from typing import Any, Optional
 
 from .base import Provider, ProviderConfig
 
@@ -37,19 +37,7 @@ class OrchestrationProvider(Provider):
         pass
 
     @abstractmethod
-    def get_worker(self, name: str, max_runs: int) -> Any:
-        pass
-
-    @abstractmethod
-    def step(self, *args, **kwargs) -> Any:
-        pass
-
-    @abstractmethod
-    def workflow(self, *args, **kwargs) -> Any:
-        pass
-
-    @abstractmethod
-    def failure(self, *args, **kwargs) -> Any:
+    def get_worker(self, name: str, max_runs: Optional[int] = None) -> Any:
         pass
 
     @abstractmethod
@@ -68,3 +56,7 @@ class OrchestrationProvider(Provider):
         **kwargs,
     ) -> dict[str, str]:
         pass
+
+    def get_workflow(self, name: str) -> Any:
+        """Get a registered workflow by name (for child spawning)."""
+        raise NotImplementedError
