@@ -1,10 +1,33 @@
 import asyncio
 import logging
+import os
 from typing import Any, Optional
 
 from core.base import OrchestrationConfig, OrchestrationProvider, Workflow
 
 logger = logging.getLogger(__name__)
+
+
+def _on_worker_done(task: asyncio.Task) -> None:
+    """Exit the process when the Hatchet worker dies unexpectedly.
+
+    This triggers a container restart so the worker recovers
+    automatically instead of running without task processing.
+    """
+    if task.cancelled():
+        logger.info("Hatchet worker task cancelled (clean shutdown)")
+        return
+    if exc := task.exception():
+        logger.error(
+            "Hatchet worker died unexpectedly: %s — exiting so "
+            "the container restarts", exc,
+        )
+    else:
+        logger.warning(
+            "Hatchet worker task completed unexpectedly — exiting "
+            "so the container restarts"
+        )
+    os._exit(1)
 
 
 class HatchetOrchestrationProvider(OrchestrationProvider):
@@ -50,9 +73,27 @@ class HatchetOrchestrationProvider(OrchestrationProvider):
             slots=self._worker_slots,
             workflows=list(self._workflows.values()),
         )
-        self._worker_task = asyncio.create_task(
-            self.worker.async_start()
-        )
+        # WORKAROUND (hatchet-sdk 1.29.3): The SDK has no public API
+        # to start a worker inside an existing event loop.
+        #   - worker.start() creates its own loop and blocks (unusable
+        #     inside Uvicorn).
+        #   - WorkerStartOptions(loop=...) is deprecated and ignored.
+        #   - worker._aio_start() is the internal async entry point
+        #     but requires worker.loop to be pre-set (otherwise the
+        #     action runner raises RuntimeError).
+        # If the SDK is upgraded, verify _aio_start and worker.loop
+        # still exist — they are private API and may change.
+        try:
+            self.worker.loop = asyncio.get_running_loop()
+            self._worker_task = asyncio.create_task(
+                self.worker._aio_start()
+            )
+        except AttributeError as exc:
+            raise RuntimeError(
+                "Hatchet SDK internals changed — worker could not "
+                "start. Check hatchet-sdk version compatibility."
+            ) from exc
+        self._worker_task.add_done_callback(_on_worker_done)
 
     # ------------------------------------------------------------------
     # Workflow registration

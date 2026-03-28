@@ -11,7 +11,6 @@ from typing import Any, Optional
 
 from hatchet_sdk import (
     ConcurrencyExpression,
-    ConcurrencyLimitStrategy,
     Context,
     Hatchet,
     TriggerWorkflowOptions,
@@ -193,10 +192,8 @@ def hatchet_graph_search_results_factory(
     graph_extraction_wf = hatchet.workflow(
         name="graph-extraction",
         input_validator=GraphExtractionInput,
-        concurrency=ConcurrencyExpression(
-            expression="input.document_id ?? input.collection_id",
-            max_runs=config.graph_search_results_concurrency_limit,
-            limit_strategy=ConcurrencyLimitStrategy.GROUP_ROUND_ROBIN,
+        concurrency=ConcurrencyExpression.from_int(
+            config.graph_search_results_concurrency_limit
         ),
     )
 
@@ -279,8 +276,11 @@ def hatchet_graph_search_results_factory(
                 **input_data["graph_creation_settings"],
             ):
                 logger.info(
-                    "Found extraction with %d entities",
+                    "Graph extraction: %d entities, %d relationships "
+                    "(document_id=%s)",
                     len(ext.entities),
+                    len(ext.relationships),
+                    document_id,
                 )
                 extractions.append(ext)
                 # Tier 3 #14: Count entities
@@ -380,6 +380,15 @@ def hatchet_graph_search_results_factory(
                     "itself succeeded): %s", document_id, e,
                 )
 
+        # Mark extraction complete so the UI shows the correct status
+        # instead of staying stuck at "processing" / "pending".
+        doc_uuid = document_id if isinstance(document_id, uuid.UUID) else uuid.UUID(document_id)
+        await service.providers.database.documents_handler.set_workflow_status(
+            id=doc_uuid,
+            status_type="extraction_status",
+            status=GraphExtractionStatus.SUCCESS,
+        )
+
         return {
             "result": (
                 "successfully ran entity description "
@@ -407,8 +416,9 @@ def hatchet_graph_search_results_factory(
         except Exception:
             pass
         try:
+            doc_uuid = document_id if isinstance(document_id, uuid.UUID) else uuid.UUID(document_id)
             await service.providers.database.documents_handler.set_workflow_status(
-                id=uuid.UUID(document_id),
+                id=doc_uuid,
                 status_type="extraction_status",
                 status=GraphExtractionStatus.FAILED,
             )
@@ -628,10 +638,8 @@ def hatchet_graph_search_results_factory(
     graph_community_summarization_wf = hatchet.workflow(
         name="graph-community-summarization",
         input_validator=GraphCommunitySummarizationInput,
-        concurrency=ConcurrencyExpression(
-            expression="input.collection_id",
-            max_runs=config.graph_search_results_concurrency_limit,
-            limit_strategy=ConcurrencyLimitStrategy.GROUP_ROUND_ROBIN,
+        concurrency=ConcurrencyExpression.from_int(
+            config.graph_search_results_concurrency_limit
         ),
     )
 
@@ -683,10 +691,8 @@ def hatchet_graph_search_results_factory(
     graph_deduplication_wf = hatchet.workflow(
         name="graph-deduplication",
         input_validator=GraphDeduplicationInput,
-        concurrency=ConcurrencyExpression(
-            expression="input.document_id",
-            max_runs=config.graph_search_results_concurrency_limit,
-            limit_strategy=ConcurrencyLimitStrategy.GROUP_ROUND_ROBIN,
+        concurrency=ConcurrencyExpression.from_int(
+            config.graph_search_results_concurrency_limit
         ),
     )
 

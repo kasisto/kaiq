@@ -9,7 +9,6 @@ from uuid import UUID
 
 from hatchet_sdk import (
     ConcurrencyExpression,
-    ConcurrencyLimitStrategy,
     Context,
     Hatchet,
 )
@@ -199,10 +198,8 @@ def hatchet_ingestion_factory(
     ingest_files_wf = hatchet.workflow(
         name="ingest-files",
         input_validator=IngestFilesInput,
-        concurrency=ConcurrencyExpression(
-            expression="input.user_id",
-            max_runs=config.ingestion_concurrency_limit,
-            limit_strategy=ConcurrencyLimitStrategy.GROUP_ROUND_ROBIN,
+        concurrency=ConcurrencyExpression.from_int(
+            config.ingestion_concurrency_limit
         ),
     )
 
@@ -312,10 +309,8 @@ def hatchet_ingestion_factory(
                             name=name, description="",
                             graph_id=coll_id,
                         )
-                    except Exception as e:
-                        logger.warning(
-                            "Could not create collection: %s", e,
-                        )
+                    except R2RException:
+                        pass  # Collection/graph already exists
                     await _assign_doc_to_collection(
                         service, document_info, coll_id,
                     )
@@ -485,10 +480,8 @@ def hatchet_ingestion_factory(
                             name=name, description="",
                             graph_id=coll_id,
                         )
-                    except Exception as e:
-                        logger.warning(
-                            "Could not create collection: %s", e,
-                        )
+                    except R2RException:
+                        pass  # Collection/graph already exists
 
                     await _assign_doc_to_collection(
                         service, document_info, coll_id,
@@ -664,10 +657,19 @@ async def _assign_doc_to_collection(
 ) -> None:
     """Assign document + chunks to a collection and mark graph outdated."""
     db = service.providers.database
-    await db.collections_handler.assign_document_to_collection_relational(
-        document_id=document_info.id,
-        collection_id=collection_id,
-    )
+    try:
+        await db.collections_handler.assign_document_to_collection_relational(
+            document_id=document_info.id,
+            collection_id=collection_id,
+        )
+    except R2RException as e:
+        if "already assigned" in str(e).lower():
+            logger.info(
+                "Document %s already assigned to collection %s, skipping.",
+                document_info.id, collection_id,
+            )
+        else:
+            raise
     await db.chunks_handler.assign_document_chunks_to_collection(
         document_id=document_info.id,
         collection_id=collection_id,
@@ -776,6 +778,25 @@ async def _maybe_extract_graph(
         ),
     )
 
+    # Pull extracted entities into collection-level graphs so they
+    # are visible without a separate FE-triggered rebuild.
+    for coll_id in document_info.collection_ids:
+        try:
+            await service.providers.database.graphs_handler.add_documents(
+                id=coll_id,
+                document_ids=[document_info.id],
+            )
+            logger.info(
+                "Pulled document %s into collection graph %s",
+                document_info.id, coll_id,
+            )
+        except Exception as e:
+            logger.warning(
+                "Graph pull failed for collection %s after "
+                "extraction of document %s: %s",
+                coll_id, document_info.id, e,
+            )
+
 
 async def _handle_ingestion_failure(
     service: IngestionService,
@@ -805,12 +826,11 @@ async def _handle_ingestion_failure(
             return
 
         document_info = docs[0]
-        if document_info.ingestion_status != IngestionStatus.SUCCESS:
-            await service.update_document_status(
-                document_info,
-                status=IngestionStatus.FAILED,
-                metadata={"failure": str(ctx.task_run_errors)},
-            )
+        await service.update_document_status(
+            document_info,
+            status=IngestionStatus.FAILED,
+            metadata={"failure": str(ctx.task_run_errors)},
+        )
     except Exception as e:
         logger.error(
             "Failed to update document status for %s: %s",

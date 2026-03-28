@@ -6,6 +6,8 @@ import re
 import time
 import uuid
 import xml.etree.ElementTree as ET
+
+from lxml import etree as lxml_etree
 from typing import Any, AsyncGenerator, Coroutine, Optional
 from uuid import UUID
 from xml.etree.ElementTree import Element
@@ -54,6 +56,18 @@ class GraphService(Service):
             config,
             providers,
         )
+
+    def _get_graph_gen_config(self) -> "GenerationConfig":
+        """Get generation config for graph operations, ensuring model is set."""
+        gen_config = (
+            self.providers.database.config.graph_creation_settings.generation_config
+            or GenerationConfig(model=self.config.app.fast_llm)
+        )
+        if not gen_config.model:
+            gen_config = gen_config.model_copy(
+                update={"model": self.config.app.fast_llm}
+            )
+        return gen_config
 
     async def create_entity(
         self,
@@ -551,10 +565,7 @@ class GraphService(Service):
             )
 
             # Call the LLM
-            gen_config = (
-                self.providers.database.config.graph_creation_settings.generation_config
-                or GenerationConfig(model=self.config.app.fast_llm)
-            )
+            gen_config = self._get_graph_gen_config()
             llm_resp = await self.providers.llm.aget_completion(
                 messages=messages,
                 generation_config=gen_config,
@@ -1166,12 +1177,36 @@ class GraphService(Service):
 
         cleaned_xml = sanitize_xml(response_str)
         wrapped = f"<root>{cleaned_xml}</root>"
+
+        # Use lxml with recover=True to handle truncated or
+        # malformed XML from LLM generation (missing closing tags,
+        # broken attributes, etc.).  Recovers all complete elements.
+        parser = lxml_etree.XMLParser(
+            recover=True,
+            resolve_entities=False,
+            no_network=True,
+        )
         try:
-            root = ET.fromstring(wrapped)
-        except ET.ParseError:
+            lxml_root = lxml_etree.fromstring(
+                wrapped.encode("utf-8"), parser=parser,
+            )
+        except lxml_etree.XMLSyntaxError:
             raise R2RException(
                 f"Failed to parse XML:\nData: {wrapped[:1000]}...", 400
             ) from None
+
+        if parser.error_log:
+            logger.warning(
+                "LLM XML required recovery (%d issue(s)): %s",
+                len(parser.error_log),
+                "; ".join(
+                    e.message for e in list(parser.error_log)[:3]
+                ),
+            )
+
+        # lxml Element supports the same findall/find/get/text API
+        # as stdlib ET — no conversion needed.
+        root = lxml_root
 
         entities_elems = root.findall(".//entity")
         if (
@@ -1183,32 +1218,22 @@ class GraphService(Service):
                 400,
             )
 
-        # build entity objects
+        # build entity objects (parse XML, collect descriptions)
         doc_id = chunks[0].document_id
         chunk_ids = [c.id for c in chunks]
-        entities_list: list[Entity] = []
+
+        entity_data: list[dict] = []
         for element in entities_elems:
-            name_attr = element.get("name")
             type_elem = element.find("type")
             desc_elem = element.find("description")
-            category = type_elem.text if type_elem is not None else None
-            desc = desc_elem.text if desc_elem is not None else None
-            desc_embed = await self.providers.embedding.async_get_embedding(
-                desc or ""
-            )
-            ent = Entity(
-                category=category,
-                description=desc,
-                name=name_attr,
-                parent_id=doc_id,
-                chunk_ids=chunk_ids,
-                description_embedding=desc_embed,
-                attributes={},
-            )
-            entities_list.append(ent)
+            entity_data.append({
+                "name": element.get("name"),
+                "category": type_elem.text if type_elem is not None else None,
+                "desc": desc_elem.text if desc_elem is not None else None,
+            })
 
-        # build relationship objects
-        relationships_list: list[Relationship] = []
+        # build relationship objects (parse XML, collect descriptions)
+        rel_data: list[dict] = []
         rel_elems = root.findall(".//relationship")
         for r_elem in rel_elems:
             source_elem = r_elem.find("source")
@@ -1217,33 +1242,61 @@ class GraphService(Service):
             desc_elem = r_elem.find("description")
             weight_elem = r_elem.find("weight")
             try:
-                subject = source_elem.text if source_elem is not None else ""
-                object_ = target_elem.text if target_elem is not None else ""
-                predicate = type_elem.text if type_elem is not None else ""
-                desc = desc_elem.text if desc_elem is not None else ""
-                weight = (
-                    float(weight_elem.text)
-                    if isinstance(weight_elem, Element) and weight_elem.text
-                    else ""
-                )
-                embed = await self.providers.embedding.async_get_embedding(
-                    desc or ""
-                )
-
-                rel = Relationship(
-                    subject=subject,
-                    predicate=predicate,
-                    object=object_,
-                    description=desc,
-                    weight=weight,
-                    parent_id=doc_id,
-                    chunk_ids=chunk_ids,
-                    attributes={},
-                    description_embedding=embed,
-                )
-                relationships_list.append(rel)
+                rel_data.append({
+                    "subject": source_elem.text if source_elem is not None else "",
+                    "object": target_elem.text if target_elem is not None else "",
+                    "predicate": type_elem.text if type_elem is not None else "",
+                    "desc": desc_elem.text if desc_elem is not None else "",
+                    "weight": (
+                        float(weight_elem.text)
+                        if weight_elem is not None and weight_elem.text
+                        else ""
+                    ),
+                })
             except Exception:
                 continue
+
+        # Batch embed all descriptions in one call instead of N calls
+        all_descs = (
+            [d["desc"] or "" for d in entity_data]
+            + [r["desc"] or "" for r in rel_data]
+        )
+        all_embeds = (
+            await self.providers.embedding.async_get_embeddings(all_descs)
+            if all_descs
+            else []
+        )
+        ent_embeds = all_embeds[: len(entity_data)]
+        rel_embeds = all_embeds[len(entity_data) :]
+
+        entities_list: list[Entity] = [
+            Entity(
+                category=d["category"],
+                description=d["desc"],
+                name=d["name"],
+                parent_id=doc_id,
+                chunk_ids=chunk_ids,
+                description_embedding=emb,
+                attributes={},
+            )
+            for d, emb in zip(entity_data, ent_embeds)
+        ]
+
+        relationships_list: list[Relationship] = [
+            Relationship(
+                subject=r["subject"],
+                predicate=r["predicate"],
+                object=r["object"],
+                description=r["desc"],
+                weight=r["weight"],
+                parent_id=doc_id,
+                chunk_ids=chunk_ids,
+                attributes={},
+                description_embedding=emb,
+            )
+            for r, emb in zip(rel_data, rel_embeds)
+        ]
+
         return entities_list, relationships_list
 
     async def store_graph_search_results_extractions(
@@ -1252,53 +1305,55 @@ class GraphService(Service):
     ):
         """Stores a batch of knowledge graph extractions in the DB."""
         for extraction in graph_search_results_extractions:
-            # Map name->id after creation
-            entities_id_map = {}
-            for e in extraction.entities:
-                if e.parent_id is not None:
-                    result = await self.providers.database.graphs_handler.entities.create(
-                        name=e.name,
-                        parent_id=e.parent_id,
-                        store_type=StoreType.DOCUMENTS,
-                        category=e.category,
-                        description=e.description,
-                        description_embedding=e.description_embedding,
-                        chunk_ids=e.chunk_ids,
-                        metadata=e.metadata,
-                    )
-                    entities_id_map[e.name] = result.id
-                else:
-                    logger.warning(f"Skipping entity with None parent_id: {e}")
+            # Insert all entities concurrently and build name->id map
+            valid_entities = [
+                e for e in extraction.entities if e.parent_id is not None
+            ]
+            results = await asyncio.gather(*(
+                self.providers.database.graphs_handler.entities.create(
+                    name=e.name,
+                    parent_id=e.parent_id,
+                    store_type=StoreType.DOCUMENTS,
+                    category=e.category,
+                    description=e.description,
+                    description_embedding=e.description_embedding,
+                    chunk_ids=e.chunk_ids,
+                    metadata=e.metadata,
+                )
+                for e in valid_entities
+            ))
+            entities_id_map = {
+                e.name: r.id for e, r in zip(valid_entities, results)
+            }
 
-            # Insert relationships
+            # Insert all relationships concurrently
+            valid_rels = []
             for rel in extraction.relationships:
                 subject_id = entities_id_map.get(rel.subject)
                 object_id = entities_id_map.get(rel.object)
-                parent_id = rel.parent_id
-
                 if any(
-                    id is None for id in (subject_id, object_id, parent_id)
+                    v is None for v in (subject_id, object_id, rel.parent_id)
                 ):
-                    logger.warning(f"Missing ID for relationship: {rel}")
+                    logger.warning("Missing ID for relationship: %s", rel)
                     continue
+                valid_rels.append((rel, subject_id, object_id))
 
-                assert isinstance(subject_id, UUID)
-                assert isinstance(object_id, UUID)
-                assert isinstance(parent_id, UUID)
-
-                await self.providers.database.graphs_handler.relationships.create(
+            await asyncio.gather(*(
+                self.providers.database.graphs_handler.relationships.create(
                     subject=rel.subject,
                     subject_id=subject_id,
                     predicate=rel.predicate,
                     object=rel.object,
                     object_id=object_id,
-                    parent_id=parent_id,
+                    parent_id=rel.parent_id,
                     description=rel.description,
                     description_embedding=rel.description_embedding,
                     weight=rel.weight,
                     metadata=rel.metadata,
                     store_type=StoreType.DOCUMENTS,
                 )
+                for rel, subject_id, object_id in valid_rels
+            ))
 
     async def deduplicate_document_entities(
         self,
@@ -1336,10 +1391,7 @@ class GraphService(Service):
                     "relationships_txt": "",
                 },
             )
-            gen_config = (
-                self.config.database.graph_creation_settings.generation_config
-                or GenerationConfig(model=self.config.app.fast_llm)
-            )
+            gen_config = self._get_graph_gen_config()
             resp = await self.providers.llm.aget_completion(
                 messages, generation_config=gen_config
             )

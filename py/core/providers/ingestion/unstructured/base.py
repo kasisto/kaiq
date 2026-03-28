@@ -411,7 +411,10 @@ class UnstructuredIngestionProvider(IngestionProvider):
         # TODO - Remove code duplication between Unstructured & R2R
         if document.document_type.value in parser_overrides:
             logger.info(
-                f"Using parser_override for {document.document_type} with input value {parser_overrides[document.document_type.value]}"
+                "Using parser_override %s for %s (document_id=%s)",
+                parser_overrides[document.document_type.value],
+                document.document_type,
+                document.id,
             )
             parser_name = parser_overrides[document.document_type.value]
 
@@ -421,9 +424,6 @@ class UnstructuredIngestionProvider(IngestionProvider):
                     ingestion_config=ingestion_config,
                     parser_name=f"zerox_{DocumentType.PDF.value}",
                 ):
-                    logger.warning(
-                        f"Using parser_override for {document.document_type}"
-                    )
                     elements.append(element)
             elif parser_name == "ocr":
                 async for element in self.parse_fallback(
