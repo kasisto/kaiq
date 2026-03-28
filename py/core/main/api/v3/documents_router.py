@@ -2133,7 +2133,7 @@ class DocumentsRouter(BaseRouterV3):
             if not auth_user.is_superuser:
                 doc_overview = await self.services.management.documents_overview(
                     user_ids=[auth_user.id],
-                    document_ids=[UUID(id)],
+                    document_ids=[id],
                     offset=0,
                     limit=1,
                 )
@@ -2373,7 +2373,7 @@ class DocumentsRouter(BaseRouterV3):
             if not auth_user.is_superuser:
                 doc_overview = await self.services.management.documents_overview(
                     user_ids=[auth_user.id],
-                    document_ids=[UUID(id)],
+                    document_ids=[id],
                     offset=0,
                     limit=1,
                 )

@@ -2,6 +2,7 @@ import logging
 import os
 from typing import Any
 
+from httpx_aiohttp import HttpxAiohttpClient
 from openai import AsyncAzureOpenAI, AsyncOpenAI, OpenAI
 
 from core.base.abstractions import GenerationConfig
@@ -32,7 +33,9 @@ class OpenAICompletionProvider(CompletionProvider):
         # Initialize OpenAI clients if credentials exist
         if os.getenv("OPENAI_API_KEY"):
             self.openai_client = OpenAI()
-            self.async_openai_client = AsyncOpenAI()
+            self.async_openai_client = AsyncOpenAI(
+                http_client=HttpxAiohttpClient(),
+            )
             logger.debug("OpenAI clients initialized successfully")
 
         # Initialize Azure OpenAI clients if credentials exist
@@ -52,6 +55,7 @@ class OpenAICompletionProvider(CompletionProvider):
                     "AZURE_API_VERSION", "2024-02-15-preview"
                 ),
                 azure_endpoint=azure_api_base,
+                http_client=HttpxAiohttpClient(),
             )
             logger.debug("Azure OpenAI clients initialized successfully")
 
@@ -68,6 +72,7 @@ class OpenAICompletionProvider(CompletionProvider):
             self.async_deepseek_client = AsyncOpenAI(
                 api_key=deepseek_api_key,
                 base_url=deepseek_api_base,
+                http_client=HttpxAiohttpClient(),
             )
             logger.debug("Deepseek OpenAI clients initialized successfully")
 
@@ -83,6 +88,7 @@ class OpenAICompletionProvider(CompletionProvider):
             self.async_ollama_client = AsyncOpenAI(
                 api_key=os.getenv("OLLAMA_API_KEY", "dummy"),
                 base_url=ollama_api_base,
+                http_client=HttpxAiohttpClient(),
             )
             logger.debug("Ollama OpenAI clients initialized successfully")
 
@@ -98,6 +104,7 @@ class OpenAICompletionProvider(CompletionProvider):
             self.async_lmstudio_client = AsyncOpenAI(
                 api_key=os.getenv("LMSTUDIO_API_KEY", "lm-studio"),
                 base_url=lmstudio_api_base,
+                http_client=HttpxAiohttpClient(),
             )
             logger.debug("LMStudio OpenAI clients initialized successfully")
 
@@ -150,6 +157,31 @@ class OpenAICompletionProvider(CompletionProvider):
                 "both AZURE_API_KEY and AZURE_API_BASE environment variables, "
                 "OLLAMA_API_BASE, LMSTUDIO_API_BASE, or AZURE_FOUNDRY_API_KEY and AZURE_FOUNDRY_API_ENDPOINT."
             )
+
+    async def close(self) -> None:
+        """Close all async OpenAI-compatible clients and their transports."""
+        for attr in (
+            'async_openai_client',
+            'async_azure_client',
+            'async_deepseek_client',
+            'async_ollama_client',
+            'async_lmstudio_client',
+        ):
+            client = getattr(self, attr, None)
+            if client is not None:
+                try:
+                    await client.close()
+                except Exception as e:
+                    logger.warning("Error closing %s: %s", attr, e)
+        # Azure Foundry async client uses a different close API
+        if self.async_azure_foundry_client is not None:
+            try:
+                await self.async_azure_foundry_client.close()
+            except Exception as e:
+                logger.warning(
+                    "Error closing async_azure_foundry_client: %s", e
+                )
+        logger.info("OpenAICompletionProvider async clients closed")
 
     def _get_client_and_model(self, model: str):
         """Determine which client to use based on model prefix and return the

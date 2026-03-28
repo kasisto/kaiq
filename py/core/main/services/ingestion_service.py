@@ -883,7 +883,16 @@ class IngestionService:
 
             # Process in batches of e.g. 128 concurrency
             if len(tasks) == 128:
-                new_vector_entries.extend(await asyncio.gather(*tasks))
+                results = await asyncio.gather(*tasks, return_exceptions=True)
+                failed = [r for r in results if isinstance(r, Exception)]
+                if failed:
+                    logger.error(
+                        "Chunk enrichment batch: %d/%d tasks failed for document %s",
+                        len(failed), len(results), document_id,
+                    )
+                    for f in failed:
+                        logger.error("Chunk enrichment error: %s", f)
+                new_vector_entries.extend(r for r in results if not isinstance(r, BaseException))
                 total_completed += 128
                 logger.info(
                     f"Completed {total_completed} out of {len(list_document_chunks)} chunks for document {document_id}"
@@ -891,9 +900,29 @@ class IngestionService:
                 tasks = []
 
         # Finish any remaining tasks
-        new_vector_entries.extend(await asyncio.gather(*tasks))
+        if tasks:
+            results = await asyncio.gather(*tasks, return_exceptions=True)
+            failed = [r for r in results if isinstance(r, Exception)]
+            if failed:
+                logger.error(
+                    "Chunk enrichment remainder: %d/%d tasks failed for document %s",
+                    len(failed), len(results), document_id,
+                )
+                for f in failed:
+                    logger.error("Chunk enrichment error: %s", f)
+            new_vector_entries.extend(r for r in results if not isinstance(r, BaseException))
+
+        total_chunks = len(list_document_chunks)
+        total_enriched = len(new_vector_entries)
+        total_failed = total_chunks - total_enriched
+        if total_failed > 0:
+            logger.warning(
+                "%d of %d chunks failed enrichment for document %s"
+                " — document will be partially enriched",
+                total_failed, total_chunks, document_id,
+            )
         logger.info(
-            f"Completed enrichment of {len(list_document_chunks)} chunks for document {document_id}"
+            f"Completed enrichment of {total_enriched}/{total_chunks} chunks for document {document_id}"
         )
 
         # Delete old chunks from vector db

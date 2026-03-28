@@ -4,6 +4,7 @@ import os
 from typing import Any
 
 import tiktoken
+from httpx_aiohttp import HttpxAiohttpClient
 from openai import AsyncOpenAI, AuthenticationError, OpenAI
 from openai._types import NOT_GIVEN
 
@@ -46,7 +47,9 @@ class OpenAIEmbeddingProvider(EmbeddingProvider):
                 "Must set OPENAI_API_KEY in order to initialize OpenAIEmbeddingProvider."
             )
         self.client = OpenAI()
-        self.async_client = AsyncOpenAI()
+        self.async_client = AsyncOpenAI(
+            http_client=HttpxAiohttpClient(),
+        )
 
         if config.rerank_model:
             raise ValueError(
@@ -84,6 +87,12 @@ class OpenAIEmbeddingProvider(EmbeddingProvider):
             self.base_dimension = max(
                 OpenAIEmbeddingProvider.MODEL_TO_DIMENSIONS[self.base_model]
             )
+
+    async def close(self) -> None:
+        """Close the async OpenAI client and its underlying HTTP transport."""
+        if hasattr(self, 'async_client') and self.async_client is not None:
+            await self.async_client.close()
+            logger.info("OpenAIEmbeddingProvider async client closed")
 
     def _get_dimensions(self):
         return (

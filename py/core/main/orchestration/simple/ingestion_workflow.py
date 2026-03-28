@@ -19,7 +19,9 @@ from core.utils import (
 )
 
 from ...services import IngestionService
-from ..hatchet.ingestion_workflow import should_skip_graph_extraction
+from ..hatchet.ingestion_workflow import (  # type: ignore[attr-defined]
+    should_skip_graph_extraction,
+)
 
 logger = logging.getLogger()
 

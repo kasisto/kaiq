@@ -2,8 +2,8 @@ import json
 from io import BytesIO
 from typing import Any, AsyncGenerator
 
-import httpx
-from httpx import AsyncClient, ConnectError, RequestError, Response
+from httpx import ConnectError, RequestError, Response
+from httpx_aiohttp import HttpxAiohttpClient as AsyncClient
 
 from shared.abstractions import R2RClientException, R2RException
 
@@ -75,7 +75,7 @@ class R2RAsyncClient(BaseClient):
         url = self._get_full_url(endpoint, version)
         request_args = self._prepare_request_args(endpoint, **kwargs)
 
-        async with httpx.AsyncClient(timeout=self.timeout) as client:
+        async with AsyncClient(timeout=self.timeout) as client:
             async with client.stream(method, url, **request_args) as response:
                 await self._handle_response(response)
                 async for line in response.aiter_lines():

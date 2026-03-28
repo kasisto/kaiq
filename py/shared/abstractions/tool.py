@@ -1,5 +1,7 @@
 from typing import Any, Callable, Optional
 
+from pydantic import ConfigDict
+
 from ..abstractions import R2RSerializable
 
 
@@ -12,9 +14,7 @@ class Tool(R2RSerializable):
     parameters: Optional[dict[str, Any]] = None
     context: Optional[Any] = None
 
-    class Config:
-        populate_by_name = True
-        arbitrary_types_allowed = True
+    model_config = ConfigDict(populate_by_name=True, arbitrary_types_allowed=True)
 
     def set_context(self, context: Any) -> None:
         """Set the context for this tool."""

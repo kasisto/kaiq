@@ -1,7 +1,7 @@
 from typing import Any, Optional, TypeVar
 from uuid import UUID
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, ConfigDict, Field
 
 from shared.api.models.base import PaginatedR2RResult, R2RResults
 
@@ -22,14 +22,15 @@ class IngestionResponse(BaseModel):
         description="The ID of the document that was ingested.",
     )
 
-    class Config:
-        json_schema_extra = {
+    model_config = ConfigDict(
+        json_schema_extra={
             "example": {
                 "message": "Ingestion task queued successfully.",
                 "task_id": "c68dc72e-fc23-5452-8f49-d7bd46088a96",
                 "document_id": "9fbe403b-c11c-5aae-8ade-ef22980c3ad1",
             }
         }
+    )
 
 
 class UpdateResponse(BaseModel):
@@ -46,14 +47,15 @@ class UpdateResponse(BaseModel):
         description="The ID of the document that was ingested.",
     )
 
-    class Config:
-        json_schema_extra = {
+    model_config = ConfigDict(
+        json_schema_extra={
             "example": {
                 "message": "Update task queued successfully.",
                 "task_id": "c68dc72e-fc23-5452-8f49-d7bd46088a96",
                 "document_ids": ["9fbe403b-c11c-5aae-8ade-ef22980c3ad1"],
             }
         }
+    )
 
 
 class VectorIndexResponse(BaseModel):

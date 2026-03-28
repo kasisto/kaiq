@@ -9,6 +9,7 @@ from io import BytesIO
 from typing import Any, AsyncGenerator
 
 import httpx
+from httpx_aiohttp import AiohttpTransport
 from unstructured_client import UnstructuredClient
 from unstructured_client.models import operations, shared
 
@@ -22,7 +23,11 @@ from core.base import (
     RecursiveCharacterTextSplitter,
 )
 from core.base.abstractions import R2RSerializable
-from core.base.providers.ingestion import IngestionConfig, IngestionProvider, SemanticParsingLimitExceeded
+from core.base.providers.ingestion import (
+    IngestionConfig,
+    IngestionProvider,
+    SemanticParsingLimitExceeded,
+)
 from core.providers.ocr import MistralOCRProvider
 from core.utils import generate_extraction_id
 from core.utils.semantic_metadata import parse_semantic_metadata
@@ -182,10 +187,29 @@ class UnstructuredIngestionProvider(IngestionProvider):
                     "UNSTRUCTURED_SERVICE_URL environment variable is not set"
                 ) from e
 
-            self.client = httpx.AsyncClient()
+            max_conn = int(os.environ.get("UNSTRUCTURED_MAX_CONNECTIONS", "50"))
+            max_keepalive = int(os.environ.get("UNSTRUCTURED_MAX_KEEPALIVE", "20"))
+            keepalive_expiry = int(os.environ.get("UNSTRUCTURED_KEEPALIVE_EXPIRY", "120"))
 
-        self.parsers: dict[DocumentType, AsyncParser] = {}
+            self.client = httpx.AsyncClient(
+                transport=AiohttpTransport(
+                    limits=httpx.Limits(
+                        max_connections=max_conn,
+                        max_keepalive_connections=max_keepalive,
+                        keepalive_expiry=keepalive_expiry,
+                    ),
+                ),
+                timeout=httpx.Timeout(3600, connect=30),
+            )
+
+        self.parsers: dict[DocumentType | str, AsyncParser] = {}  # type: ignore[type-arg]
         self._initialize_parsers()
+
+    async def close(self) -> None:
+        """Close the HTTP client and release connections."""
+        if isinstance(self.client, httpx.AsyncClient):
+            await self.client.aclose()
+            logger.info("UnstructuredIngestionProvider HTTP client closed")
 
     def _initialize_parsers(self):
         for doc_type, parsers in self.R2R_FALLBACK_PARSERS.items():

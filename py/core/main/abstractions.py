@@ -1,7 +1,7 @@
 from dataclasses import dataclass
 from typing import TYPE_CHECKING
 
-from pydantic import BaseModel
+from pydantic import BaseModel, ConfigDict
 
 from core.providers import (
     AnthropicCompletionProvider,
@@ -78,8 +78,7 @@ class R2RProviders(BaseModel):
     orchestration: HatchetOrchestrationProvider | SimpleOrchestrationProvider
     scheduler: APSchedulerProvider
 
-    class Config:
-        arbitrary_types_allowed = True
+    model_config = ConfigDict(arbitrary_types_allowed=True)
 
 
 @dataclass

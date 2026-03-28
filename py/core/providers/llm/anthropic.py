@@ -12,6 +12,7 @@ from typing import (
 )
 
 from anthropic import Anthropic, AsyncAnthropic
+from httpx_aiohttp import HttpxAiohttpClient
 from anthropic.types import (
     ContentBlockStopEvent,
     Message,
@@ -174,8 +175,16 @@ class AnthropicCompletionProvider(CompletionProvider):
     def __init__(self, config: CompletionConfig, *args, **kwargs) -> None:
         super().__init__(config)
         self.client = Anthropic()
-        self.async_client = AsyncAnthropic()
+        self.async_client = AsyncAnthropic(
+            http_client=HttpxAiohttpClient(),
+        )
         logger.debug("AnthropicCompletionProvider initialized successfully")
+
+    async def close(self) -> None:
+        """Close the async Anthropic client and its underlying transport."""
+        if hasattr(self, 'async_client') and self.async_client is not None:
+            await self.async_client.close()
+            logger.info("AnthropicCompletionProvider async client closed")
 
     def _get_base_args(
         self, generation_config: GenerationConfig

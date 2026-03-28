@@ -1,6 +1,7 @@
 # type: ignore
 import asyncio
 import logging
+import os
 import uuid
 from typing import TYPE_CHECKING
 from uuid import UUID
@@ -307,7 +308,10 @@ def hatchet_ingestion_factory(
                             )
                         ).result()
 
-                        await asyncio.gather(extract_result)
+                        await asyncio.wait_for(
+                            asyncio.gather(extract_result),
+                            timeout=float(os.environ.get("GRAPH_EXTRACTION_TIMEOUT", "3600")),
+                        )
                     else:
                         # Mark extraction as complete when skipping
                         await service.providers.database.documents_handler.set_workflow_status(
@@ -565,7 +569,10 @@ def hatchet_ingestion_factory(
                     )
                 ).result()
 
-                await asyncio.gather(extract_result)
+                await asyncio.wait_for(
+                    asyncio.gather(extract_result),
+                    timeout=float(os.environ.get("GRAPH_EXTRACTION_TIMEOUT", "3600")),
+                )
 
             return {
                 "status": "Successfully finalized ingestion",

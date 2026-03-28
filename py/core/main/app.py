@@ -1,3 +1,5 @@
+import logging
+
 from fastapi import FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.openapi.utils import get_openapi
@@ -23,6 +25,8 @@ from .api.v3.system_router import SystemRouter
 from .api.v3.users_router import UsersRouter
 from .config import R2RConfig
 from .middleware.project_schema import ProjectSchemaMiddleware
+
+logger = logging.getLogger(__name__)
 
 
 class R2RApp:

@@ -16,13 +16,13 @@ from core.base import (
     RecursiveCharacterTextSplitter,
     TextSplitter,
 )
+from core.base.providers.ingestion import SemanticParsingLimitExceeded
 from core.providers.database import PostgresDatabaseProvider
 from core.providers.llm import (
     LiteLLMCompletionProvider,
     OpenAICompletionProvider,
     R2RCompletionProvider,
 )
-from core.base.providers.ingestion import SemanticParsingLimitExceeded
 from core.providers.ocr import MistralOCRProvider
 from core.utils import generate_extraction_id
 from core.utils.semantic_metadata import parse_semantic_metadata

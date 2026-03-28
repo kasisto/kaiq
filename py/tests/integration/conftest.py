@@ -1,3 +1,4 @@
+import os
 import uuid
 import asyncio
 import time
@@ -192,3 +193,162 @@ def test_collection(client: R2RClient, test_document):
             pass
     except Exception as e:
         print(f"Error during test_collection cleanup: {e}")
+
+
+# ---------------------------------------------------------------------------
+# Database-layer fixtures (for test_db_*.py — direct DB handler tests)
+# ---------------------------------------------------------------------------
+
+from core.base import AppConfig, DatabaseConfig, VectorQuantizationType
+from core.providers import NaClCryptoConfig, NaClCryptoProvider
+from core.providers.database.postgres import (
+    PostgresChunksHandler,
+    PostgresCollectionsHandler,
+    PostgresConversationsHandler,
+    PostgresDatabaseProvider,
+    PostgresDocumentsHandler,
+    PostgresGraphsHandler,
+    PostgresLimitsHandler,
+    PostgresPromptsHandler,
+)
+from core.providers.database.users import PostgresUserHandler
+
+TEST_DB_CONNECTION_STRING = os.environ.get(
+    "TEST_DB_CONNECTION_STRING",
+    "postgresql://postgres:postgres@localhost:5432/test_db",
+)
+
+
+@pytest.fixture
+async def db_provider():
+    crypto_provider = NaClCryptoProvider(NaClCryptoConfig(app={}))
+    db_config = DatabaseConfig(
+        app=AppConfig(project_name="test_project"),
+        provider="postgres",
+        connection_string=TEST_DB_CONNECTION_STRING,
+        postgres_configuration_settings={
+            "max_connections": 10,
+            "statement_cache_size": 100,
+        },
+        project_name="test_project",
+    )
+
+    dimension = 4
+    quantization_type = VectorQuantizationType.FP32
+
+    provider = PostgresDatabaseProvider(
+        db_config, dimension, crypto_provider, quantization_type
+    )
+
+    await provider.initialize()
+    yield provider
+    await provider.close()
+
+
+@pytest.fixture
+def crypto_provider():
+    return NaClCryptoProvider(NaClCryptoConfig(app={}))
+
+
+@pytest.fixture
+async def chunks_handler(db_provider):
+    handler = PostgresChunksHandler(
+        project_name=db_provider.project_name,
+        connection_manager=db_provider.connection_manager,
+        dimension=db_provider.dimension,
+        quantization_type=db_provider.quantization_type,
+    )
+    await handler.create_tables()
+    return handler
+
+
+@pytest.fixture
+async def collections_handler(db_provider):
+    handler = PostgresCollectionsHandler(
+        project_name=db_provider.project_name,
+        connection_manager=db_provider.connection_manager,
+        config=db_provider.config,
+    )
+    await handler.create_tables()
+    return handler
+
+
+@pytest.fixture
+async def conversations_handler(db_provider):
+    handler = PostgresConversationsHandler(
+        db_provider.project_name, db_provider.connection_manager
+    )
+    await handler.create_tables()
+    return handler
+
+
+@pytest.fixture
+async def documents_handler(db_provider):
+    handler = PostgresDocumentsHandler(
+        project_name=db_provider.project_name,
+        connection_manager=db_provider.connection_manager,
+        dimension=db_provider.dimension,
+    )
+    await handler.create_tables()
+    return handler
+
+
+@pytest.fixture
+async def graphs_handler(db_provider):
+    create_col_sql = f"""
+        ALTER TABLE "{db_provider.project_name}"."graphs_entities"
+        ADD COLUMN IF NOT EXISTS collection_ids UUID[] DEFAULT '{{}}';
+    """
+    await db_provider.connection_manager.execute_query(create_col_sql)
+
+    handler = PostgresGraphsHandler(
+        project_name=db_provider.project_name,
+        connection_manager=db_provider.connection_manager,
+        dimension=db_provider.dimension,
+        quantization_type=db_provider.quantization_type,
+        collections_handler=None,
+    )
+    await handler.create_tables()
+    return handler
+
+
+@pytest.fixture
+async def limits_handler(db_provider):
+    handler = PostgresLimitsHandler(
+        project_name=db_provider.project_name,
+        connection_manager=db_provider.connection_manager,
+        config=db_provider.config,
+    )
+    await handler.create_tables()
+    await db_provider.connection_manager.execute_query(
+        f"TRUNCATE {handler._get_table_name('request_log')};"
+    )
+    return handler
+
+
+@pytest.fixture
+async def users_handler(db_provider, crypto_provider):
+    handler = PostgresUserHandler(
+        project_name=db_provider.project_name,
+        connection_manager=db_provider.connection_manager,
+        crypto_provider=crypto_provider,
+    )
+    await handler.create_tables()
+    await db_provider.connection_manager.execute_query(
+        f"TRUNCATE {handler._get_table_name('users')} CASCADE;"
+    )
+    await db_provider.connection_manager.execute_query(
+        f"TRUNCATE {handler._get_table_name('users_api_keys')} CASCADE;"
+    )
+    return handler
+
+
+@pytest.fixture
+async def prompt_handler(db_provider):
+    handler = PostgresPromptsHandler(
+        project_name=db_provider.project_name,
+        connection_manager=db_provider.connection_manager,
+        prompt_directory=None,
+    )
+    await handler.create_tables()
+    return handler

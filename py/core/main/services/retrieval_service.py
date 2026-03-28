@@ -565,8 +565,8 @@ class RetrievalService(Service):
             query=query, num_sub_queries=search_settings.num_sub_queries
         )
 
-        chunk_all = []
-        graph_all = []
+        chunk_all: list[ChunkSearchResult] = []
+        graph_all: list[GraphSearchResult] = []
 
         # We'll gather the per-doc searches in parallel
         tasks = []
@@ -582,11 +582,15 @@ class RetrievalService(Service):
             )
 
         # 2) Wait for them all
-        results_list = await asyncio.gather(*tasks)
+        results_list = await asyncio.gather(*tasks, return_exceptions=True)
         # each item in results_list is a tuple: (chunks, graphs)
 
-        # Flatten chunk+graph results
-        for c_results, g_results in results_list:
+        # Flatten chunk+graph results — skip failed fanout tasks
+        for result in results_list:
+            if isinstance(result, BaseException):
+                logger.error("Search fanout task failed: %s", result)
+                continue
+            c_results, g_results = result
             chunk_all.extend(c_results)
             graph_all.extend(g_results)
 
