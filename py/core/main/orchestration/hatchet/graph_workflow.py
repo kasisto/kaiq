@@ -1,4 +1,5 @@
 import asyncio
+import copy
 import json
 import logging
 import math
@@ -7,8 +8,6 @@ import time
 import uuid
 from datetime import timedelta
 from typing import Any, Optional
-
-import copy
 
 from hatchet_sdk import (
     ConcurrencyExpression,
@@ -501,11 +500,17 @@ def hatchet_graph_search_results_factory(
     ) -> None:
         collection_id = input.collection_id
         if collection_id:
-            await service.providers.database.documents_handler.set_workflow_status(
-                id=uuid.UUID(collection_id),
-                status_type="graph_cluster_status",
-                status=GraphConstructionStatus.FAILED,
-            )
+            try:
+                await service.providers.database.documents_handler.set_workflow_status(
+                    id=uuid.UUID(collection_id),
+                    status_type="graph_cluster_status",
+                    status=GraphConstructionStatus.FAILED,
+                )
+            except Exception as e:
+                logger.error(
+                    "Failed to update cluster status for %s: %s",
+                    collection_id, e,
+                )
 
     # ======================================================================
     # graph-community-summarization

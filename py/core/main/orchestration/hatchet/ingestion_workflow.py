@@ -2,7 +2,6 @@ import asyncio
 import json
 import logging
 import os
-import uuid
 from datetime import timedelta
 from typing import Any, Optional
 from uuid import UUID

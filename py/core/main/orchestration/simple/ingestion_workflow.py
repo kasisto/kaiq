@@ -280,17 +280,18 @@ def simple_ingestion_factory(service: IngestionService):
                             service, document_info, collection_id,
                         )
 
-                    if service.providers.ingestion.config.automatic_extraction:
-                        raise R2RException(
-                            status_code=501,
-                            message="Automatic extraction not yet implemented for `simple` ingestion workflows.",
-                        ) from None
-
             except R2RException:
                 raise
             except Exception as e:
                 logger.error(
                     "Error assigning document to collection: %s", e,
+                )
+
+            if service.providers.ingestion.config.automatic_extraction:
+                raise R2RException(
+                    status_code=501,
+                    message="Automatic extraction not yet implemented "
+                    "for `simple` ingestion workflows.",
                 )
 
         except Exception as e:
