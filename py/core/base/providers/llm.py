@@ -211,12 +211,12 @@ class CompletionProvider(Provider):
             }
             _llm_duration.record(_elapsed, _base_attrs)
             if completion.usage:
-                if completion.usage.prompt_tokens:
+                if completion.usage.prompt_tokens is not None:
                     _llm_tokens.add(
                         completion.usage.prompt_tokens,
                         {**_base_attrs, "token_type": "prompt"},
                     )
-                if completion.usage.completion_tokens:
+                if completion.usage.completion_tokens is not None:
                     _llm_tokens.add(
                         completion.usage.completion_tokens,
                         {**_base_attrs, "token_type": "completion"},
@@ -234,9 +234,10 @@ class CompletionProvider(Provider):
         generation_config: GenerationConfig,
         **kwargs,
     ) -> AsyncGenerator[LLMChatCompletionChunk, None]:
-        # TODO: Record streaming LLM metrics (duration + token usage).
-        # Requires accumulating chunk.usage across the full stream and
-        # emitting a single metric after the last chunk.
+        _start = time.monotonic()
+        _total_prompt = 0
+        _total_completion = 0
+
         generation_config.stream = True
         task = {
             "messages": messages,
@@ -244,6 +245,20 @@ class CompletionProvider(Provider):
             "kwargs": kwargs,
         }
         async for chunk in self._execute_with_backoff_async_stream(task):
+            # Track usage from chunks (many providers include it in
+            # the final chunk when stream_options={"include_usage": True})
+            if hasattr(chunk, "usage") and chunk.usage:
+                if (
+                    hasattr(chunk.usage, "prompt_tokens")
+                    and chunk.usage.prompt_tokens is not None
+                ):
+                    _total_prompt = chunk.usage.prompt_tokens
+                if (
+                    hasattr(chunk.usage, "completion_tokens")
+                    and chunk.usage.completion_tokens is not None
+                ):
+                    _total_completion = chunk.usage.completion_tokens
+
             if isinstance(chunk, dict):
                 yield LLMChatCompletionChunk(**chunk)
                 continue
@@ -264,6 +279,33 @@ class CompletionProvider(Provider):
                 except Exception as e:
                     logger.error(f"Error parsing chunk: {e}")
                     yield LLMChatCompletionChunk(**(chunk.as_dict()))
+
+        # Record metrics after stream is exhausted
+        try:
+            _elapsed = time.monotonic() - _start
+            ctx = get_tenant_context()
+            _model = generation_config.model or "unknown"
+            _base_attrs = {
+                "org_id": ctx.get("org_id", ""),
+                "tenant_id": ctx.get("tenant_id", ""),
+                "gen_ai.request.model": _model,
+            }
+            _llm_duration.record(_elapsed, _base_attrs)
+            if _total_prompt:
+                _llm_tokens.add(
+                    _total_prompt,
+                    {**_base_attrs, "token_type": "prompt"},
+                )
+            if _total_completion:
+                _llm_tokens.add(
+                    _total_completion,
+                    {**_base_attrs, "token_type": "completion"},
+                )
+        except Exception:
+            logger.debug(
+                "Failed to record streaming LLM metrics",
+                exc_info=True,
+            )
 
     def get_completion_stream(
         self,

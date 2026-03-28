@@ -65,25 +65,6 @@ class EmbeddingConfig(ProviderConfig):
         return ["litellm", "openai", "ollama"]
 
 
-def _record_embedding_metrics(
-    elapsed: float,
-    word_count: int,
-    model: str,
-) -> None:
-    """Record duration and word-count metrics for an embedding call."""
-    try:
-        ctx = get_tenant_context()
-        attrs = {
-            "org_id": ctx.get("org_id", ""),
-            "tenant_id": ctx.get("tenant_id", ""),
-            "gen_ai.request.model": model,
-        }
-        _embedding_duration.record(elapsed, attrs)
-        _embedding_words.add(word_count, attrs)
-    except Exception:
-        logger.debug("Failed to record embedding metrics", exc_info=True)
-
-
 class EmbeddingProvider(Provider):
     class Step(Enum):
         BASE = 1
@@ -101,13 +82,45 @@ class EmbeddingProvider(Provider):
         self.semaphore = asyncio.Semaphore(config.concurrent_request_limit)
         self.current_requests = 0
 
+    def _record_metrics_from_task(
+        self, elapsed: float, task: dict[str, Any]
+    ) -> None:
+        """Record duration, word-count, and batch-size metrics."""
+        try:
+            # Resolve texts from either "texts" (list) or "text" (single)
+            texts: list[str] = task.get(
+                "texts", [task["text"]] if "text" in task else []
+            )
+            word_count = sum(len(t.split()) for t in texts)
+            model = getattr(self.config, "base_model", "unknown")
+
+            ctx = get_tenant_context()
+            attrs = {
+                "org_id": ctx.get("org_id", ""),
+                "tenant_id": ctx.get("tenant_id", ""),
+                "gen_ai.request.model": model,
+            }
+            _embedding_duration.record(elapsed, attrs)
+            _embedding_words.add(word_count, attrs)
+            if len(texts) > 1:
+                _embedding_batch_size.record(len(texts), attrs)
+        except Exception:
+            logger.debug(
+                "Failed to record embedding metrics", exc_info=True
+            )
+
     async def _execute_with_backoff_async(self, task: dict[str, Any]):
         retries = 0
         backoff = self.config.initial_backoff
+        _start = time.monotonic()
         while retries < self.config.max_retries:
             try:
                 async with self.semaphore:
-                    return await self._execute_task(task)
+                    result = await self._execute_task(task)
+                self._record_metrics_from_task(
+                    time.monotonic() - _start, task
+                )
+                return result
             except AuthenticationError:
                 raise
             except Exception as e:
@@ -123,9 +136,14 @@ class EmbeddingProvider(Provider):
     def _execute_with_backoff_sync(self, task: dict[str, Any]):
         retries = 0
         backoff = self.config.initial_backoff
+        _start = time.monotonic()
         while retries < self.config.max_retries:
             try:
-                return self._execute_task_sync(task)
+                result = self._execute_task_sync(task)
+                self._record_metrics_from_task(
+                    time.monotonic() - _start, task
+                )
+                return result
             except AuthenticationError:
                 raise
             except Exception as e:
@@ -151,106 +169,44 @@ class EmbeddingProvider(Provider):
         text: str,
         stage: Step = Step.BASE,
     ):
-        _start = time.monotonic()
         task = {
             "text": text,
             "stage": stage,
         }
-        result = await self._execute_with_backoff_async(task)
-        _record_embedding_metrics(
-            elapsed=time.monotonic() - _start,
-            word_count=len(text.split()),
-            model=getattr(self.config, "base_model", "unknown"),
-        )
-        return result
+        return await self._execute_with_backoff_async(task)
 
     def get_embedding(
         self,
         text: str,
         stage: Step = Step.BASE,
     ):
-        _start = time.monotonic()
         task = {
             "text": text,
             "stage": stage,
         }
-        result = self._execute_with_backoff_sync(task)
-        _record_embedding_metrics(
-            elapsed=time.monotonic() - _start,
-            word_count=len(text.split()),
-            model=getattr(self.config, "base_model", "unknown"),
-        )
-        return result
+        return self._execute_with_backoff_sync(task)
 
     async def async_get_embeddings(
         self,
         texts: list[str],
         stage: Step = Step.BASE,
     ):
-        _start = time.monotonic()
         task = {
             "texts": texts,
             "stage": stage,
         }
-        result = await self._execute_with_backoff_async(task)
-        _record_embedding_metrics(
-            elapsed=time.monotonic() - _start,
-            word_count=sum(len(t.split()) for t in texts),
-            model=getattr(self.config, "base_model", "unknown"),
-        )
-        try:
-            ctx = get_tenant_context()
-            _embedding_batch_size.record(
-                len(texts),
-                {
-                    "org_id": ctx.get("org_id", ""),
-                    "tenant_id": ctx.get("tenant_id", ""),
-                    "gen_ai.request.model": getattr(
-                        self.config, "base_model", "unknown"
-                    ),
-                },
-            )
-        except Exception:
-            logger.debug(
-                "Failed to record embedding batch size metric",
-                exc_info=True,
-            )
-        return result
+        return await self._execute_with_backoff_async(task)
 
     def get_embeddings(
         self,
         texts: list[str],
         stage: Step = Step.BASE,
     ) -> list[list[float]]:
-        _start = time.monotonic()
         task = {
             "texts": texts,
             "stage": stage,
         }
-        result = self._execute_with_backoff_sync(task)
-        _record_embedding_metrics(
-            elapsed=time.monotonic() - _start,
-            word_count=sum(len(t.split()) for t in texts),
-            model=getattr(self.config, "base_model", "unknown"),
-        )
-        try:
-            ctx = get_tenant_context()
-            _embedding_batch_size.record(
-                len(texts),
-                {
-                    "org_id": ctx.get("org_id", ""),
-                    "tenant_id": ctx.get("tenant_id", ""),
-                    "gen_ai.request.model": getattr(
-                        self.config, "base_model", "unknown"
-                    ),
-                },
-            )
-        except Exception:
-            logger.debug(
-                "Failed to record embedding batch size metric",
-                exc_info=True,
-            )
-        return result
+        return self._execute_with_backoff_sync(task)
 
     @abstractmethod
     def rerank(
