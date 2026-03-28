@@ -561,7 +561,12 @@ class IngestionService:
             document_info, IngestionStatus.SUCCESS
         )
 
-        # Record document success metric + approximate pipeline duration
+        # Record document success metric + approximate pipeline duration.
+        # NOTE: When ingestion runs via Hatchet (async workflow engine),
+        # tenant context (org_id/tenant_id) may be empty because Hatchet
+        # workers execute outside the original HTTP request scope and
+        # ContextVars are not propagated. This is a known limitation —
+        # fixing Hatchet context propagation is tracked separately.
         try:
             ctx = get_tenant_context()
             doc_type = (
@@ -569,6 +574,10 @@ class IngestionService:
                 if document_info.document_type
                 else "unknown"
             )
+            # document_type cardinality is bounded (~30 values from the
+            # DocumentType enum: PDF, DOCX, TXT, HTML, etc.), so it is
+            # safe to use as a metric attribute without causing high-
+            # cardinality issues in the TSDB.
             _attrs = {
                 "org_id": ctx.get("org_id", ""),
                 "tenant_id": ctx.get("tenant_id", ""),
@@ -579,8 +588,12 @@ class IngestionService:
             )
             # Approximate duration from document creation to finalization
             if document_info.created_at:
+                created_at = document_info.created_at
+                # Guard: if created_at is naive (no tzinfo), assume UTC
+                if created_at.tzinfo is None:
+                    created_at = created_at.replace(tzinfo=timezone.utc)
                 _elapsed = (
-                    datetime.now(timezone.utc) - document_info.created_at
+                    datetime.now(timezone.utc) - created_at
                 ).total_seconds()
                 if _elapsed > 0:
                     _ingestion_duration.record(_elapsed, _attrs)

@@ -31,13 +31,11 @@ from fastapi import FastAPI, Request
 # OpenTelemetry is optional - gracefully degrade when not installed (e.g., in tests)
 try:
     from opentelemetry import trace
-    from opentelemetry.sdk.trace import ReadableSpan, Span, SpanProcessor
+    from opentelemetry.sdk.trace import SpanProcessor
     OTEL_AVAILABLE = True
 except ImportError:
     trace = None  # type: ignore[assignment]
-    Span = None  # type: ignore[assignment,misc]
     SpanProcessor = object  # type: ignore[assignment,misc]
-    ReadableSpan = None  # type: ignore[assignment,misc]
     OTEL_AVAILABLE = False
 
 logger = logging.getLogger(__name__)
@@ -153,7 +151,11 @@ class NoOpMeter:
 
 
 class NoOpGauge:
-    """A no-op observable gauge that does nothing."""
+    """A no-op observable gauge that does nothing.
+
+    Observable gauges use callbacks (not direct record calls), so this
+    no-op class needs no methods -- the callback is simply never invoked.
+    """
     pass
 
 
@@ -199,37 +201,38 @@ def setup_opentelemetry(
         root_logger.addFilter(TenantLogFilter())
         logger.info("Tenant log filter installed for %s", service_name)
 
-    # Skip OTel-specific setup if not installed
-    if not OTEL_AVAILABLE:
-        logger.info("OpenTelemetry not installed, skipping trace setup for %s", service_name)
-        return
+    # Determine whether OTel tracing is active
+    otel_tracing_active = False
+    if OTEL_AVAILABLE:
+        otel_enabled = os.getenv("OTEL_ENABLED", "false").lower()
+        if otel_enabled == "true":
+            otel_tracing_active = True
+        elif otel_enabled != "false":
+            raise ValueError(
+                f"Invalid OTEL_ENABLED value: '{otel_enabled}'. "
+                "Must be 'true' or 'false'."
+            )
 
-    # Check if OpenTelemetry is enabled
-    otel_enabled = os.getenv("OTEL_ENABLED", "false").lower()
-    if otel_enabled == "false":
-        logger.info("OpenTelemetry disabled for %s", service_name)
-        return
+    # Register span processor only when OTel tracing is active
+    if otel_tracing_active:
+        logger.info("Setting up OpenTelemetry tenant context for %s", service_name)
+        try:
+            tracer_provider = trace.get_tracer_provider()
+            if hasattr(tracer_provider, "add_span_processor"):
+                tracer_provider.add_span_processor(TenantSpanProcessor())
+                logger.info("TenantSpanProcessor registered")
+        except Exception:
+            logger.debug("Could not register TenantSpanProcessor", exc_info=True)
+    else:
+        logger.info("OpenTelemetry tracing not active for %s", service_name)
 
-    if otel_enabled != "true":
-        raise ValueError(f"Invalid OTEL_ENABLED value: '{otel_enabled}'. Must be 'true' or 'false'.")
-
-    logger.info("Setting up OpenTelemetry tenant context for %s", service_name)
-
-    # Register span processor to propagate tenant attrs to ALL spans
-    try:
-        tracer_provider = trace.get_tracer_provider()
-        if hasattr(tracer_provider, "add_span_processor"):
-            tracer_provider.add_span_processor(TenantSpanProcessor())
-            logger.info("TenantSpanProcessor registered")
-    except Exception:
-        logger.debug("Could not register TenantSpanProcessor", exc_info=True)
-
-    # Add middleware to extract tenant context from Kong headers
+    # Always add middleware to populate ContextVars from Kong headers.
+    # The log filter needs populated ContextVars even without OTel tracing.
     @app.middleware("http")
     async def add_tenant_context(request: Request, call_next):
         """
         Extract tenant context from Kong-injected headers, set ContextVars,
-        and add to the current trace span.
+        and optionally add to the current trace span.
         """
         # Set ContextVars (used by log filter and span processor)
         org_id = request.headers.get("X-Organization-Id", "")
@@ -246,14 +249,15 @@ def setup_opentelemetry(
             # populated the ContextVars.  Without this, the root HTTP span
             # would be missing tenant attributes even though all child spans
             # (created later) pick them up via the SpanProcessor.
-            span = trace.get_current_span()
-            if span.is_recording():
-                if org_id:
-                    span.set_attribute("kaigentic.org_id", org_id)
-                if tenant_id:
-                    span.set_attribute("kaigentic.tenant_id", tenant_id)
-                if user_id:
-                    span.set_attribute("kaigentic.user_id", user_id)
+            if otel_tracing_active:
+                span = trace.get_current_span()
+                if span.is_recording():
+                    if org_id:
+                        span.set_attribute("kaigentic.org_id", org_id)
+                    if tenant_id:
+                        span.set_attribute("kaigentic.tenant_id", tenant_id)
+                    if user_id:
+                        span.set_attribute("kaigentic.user_id", user_id)
 
             response = await call_next(request)
             return response
@@ -263,7 +267,7 @@ def setup_opentelemetry(
             _tenant_id_var.reset(tenant_token)
             _user_id_var.reset(user_token)
 
-    logger.info("OpenTelemetry tenant context configured for %s", service_name)
+    logger.info("Tenant context middleware installed for %s", service_name)
 
 
 def get_tracer(name: str):

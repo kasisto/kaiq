@@ -54,7 +54,7 @@ from ..abstractions import R2RProviders
 from ..config import R2RConfig
 from .base import Service
 
-import time as _time
+import time
 
 from core.utils.otel_setup import get_meter, get_tenant_context
 
@@ -285,7 +285,7 @@ class RetrievalService(Service):
         to basic, hyde, or rag_fusion method. Each returns
         an AggregateSearchResult that includes chunk + graph results.
         """
-        _search_start = _time.monotonic()
+        _search_start = time.monotonic()
         strategy = search_settings.search_strategy.lower()
         _status = "error"
 
@@ -315,7 +315,7 @@ class RetrievalService(Service):
                 }
                 _search_counter.add(1, _attrs)
                 _search_duration.record(
-                    _time.monotonic() - _search_start, _attrs
+                    time.monotonic() - _search_start, _attrs
                 )
             except Exception:
                 logger.debug(

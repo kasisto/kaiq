@@ -60,6 +60,25 @@ class EmbeddingConfig(ProviderConfig):
         return ["litellm", "openai", "ollama"]
 
 
+def _record_embedding_metrics(
+    elapsed: float,
+    word_count: int,
+    model: str,
+) -> None:
+    """Record duration and word-count metrics for an embedding call."""
+    try:
+        ctx = get_tenant_context()
+        attrs = {
+            "org_id": ctx.get("org_id", ""),
+            "tenant_id": ctx.get("tenant_id", ""),
+            "gen_ai.request.model": model,
+        }
+        _embedding_duration.record(elapsed, attrs)
+        _embedding_words.add(word_count, attrs)
+    except Exception:
+        logger.debug("Failed to record embedding metrics", exc_info=True)
+
+
 class EmbeddingProvider(Provider):
     class Step(Enum):
         BASE = 1
@@ -133,26 +152,11 @@ class EmbeddingProvider(Provider):
             "stage": stage,
         }
         result = await self._execute_with_backoff_async(task)
-
-        # Record embedding metrics
-        try:
-            _elapsed = time.monotonic() - _start
-            ctx = get_tenant_context()
-            _base_attrs = {
-                "org_id": ctx.get("org_id", ""),
-                "tenant_id": ctx.get("tenant_id", ""),
-                "gen_ai.request.model": getattr(self.config, "base_model", "unknown"),
-            }
-            _embedding_duration.record(_elapsed, _base_attrs)
-            _embedding_words.add(
-                len(text.split()),
-                _base_attrs,
-            )
-        except Exception:
-            logger.debug(
-                "Failed to record embedding metrics", exc_info=True
-            )
-
+        _record_embedding_metrics(
+            elapsed=time.monotonic() - _start,
+            word_count=len(text.split()),
+            model=getattr(self.config, "base_model", "unknown"),
+        )
         return result
 
     def get_embedding(
@@ -166,26 +170,11 @@ class EmbeddingProvider(Provider):
             "stage": stage,
         }
         result = self._execute_with_backoff_sync(task)
-
-        # Record embedding metrics
-        try:
-            _elapsed = time.monotonic() - _start
-            ctx = get_tenant_context()
-            _base_attrs = {
-                "org_id": ctx.get("org_id", ""),
-                "tenant_id": ctx.get("tenant_id", ""),
-                "gen_ai.request.model": getattr(self.config, "base_model", "unknown"),
-            }
-            _embedding_duration.record(_elapsed, _base_attrs)
-            _embedding_words.add(
-                len(text.split()),
-                _base_attrs,
-            )
-        except Exception:
-            logger.debug(
-                "Failed to record embedding metrics", exc_info=True
-            )
-
+        _record_embedding_metrics(
+            elapsed=time.monotonic() - _start,
+            word_count=len(text.split()),
+            model=getattr(self.config, "base_model", "unknown"),
+        )
         return result
 
     async def async_get_embeddings(
@@ -199,25 +188,11 @@ class EmbeddingProvider(Provider):
             "stage": stage,
         }
         result = await self._execute_with_backoff_async(task)
-
-        # Record embedding metrics for batch
-        try:
-            _elapsed = time.monotonic() - _start
-            ctx = get_tenant_context()
-            _base_attrs = {
-                "org_id": ctx.get("org_id", ""),
-                "tenant_id": ctx.get("tenant_id", ""),
-                "gen_ai.request.model": getattr(self.config, "base_model", "unknown"),
-            }
-            _embedding_duration.record(_elapsed, _base_attrs)
-            _total_words = sum(len(t.split()) for t in texts)
-            _embedding_words.add(_total_words, _base_attrs)
-        except Exception:
-            logger.debug(
-                "Failed to record embedding batch metrics",
-                exc_info=True,
-            )
-
+        _record_embedding_metrics(
+            elapsed=time.monotonic() - _start,
+            word_count=sum(len(t.split()) for t in texts),
+            model=getattr(self.config, "base_model", "unknown"),
+        )
         return result
 
     def get_embeddings(
@@ -231,25 +206,11 @@ class EmbeddingProvider(Provider):
             "stage": stage,
         }
         result = self._execute_with_backoff_sync(task)
-
-        # Record embedding metrics for batch
-        try:
-            _elapsed = time.monotonic() - _start
-            ctx = get_tenant_context()
-            _base_attrs = {
-                "org_id": ctx.get("org_id", ""),
-                "tenant_id": ctx.get("tenant_id", ""),
-                "gen_ai.request.model": getattr(self.config, "base_model", "unknown"),
-            }
-            _embedding_duration.record(_elapsed, _base_attrs)
-            _total_words = sum(len(t.split()) for t in texts)
-            _embedding_words.add(_total_words, _base_attrs)
-        except Exception:
-            logger.debug(
-                "Failed to record embedding batch metrics",
-                exc_info=True,
-            )
-
+        _record_embedding_metrics(
+            elapsed=time.monotonic() - _start,
+            word_count=sum(len(t.split()) for t in texts),
+            model=getattr(self.config, "base_model", "unknown"),
+        )
         return result
 
     @abstractmethod

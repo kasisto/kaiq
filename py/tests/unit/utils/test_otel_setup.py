@@ -174,7 +174,8 @@ class TestSetupOpentelemetry:
         root_logger.filters = [f for f in root_logger.filters if not isinstance(f, TenantLogFilter)]
 
     def test_skips_otel_when_disabled(self):
-        """No OTel setup when OTEL_ENABLED=false."""
+        """Span processor not registered when OTEL_ENABLED=false, but
+        ContextVar middleware is still installed (needed by the log filter)."""
         from fastapi import FastAPI
         app = FastAPI()
         initial_middleware = len(app.user_middleware)
@@ -182,8 +183,8 @@ class TestSetupOpentelemetry:
         with patch.dict("os.environ", {"OTEL_ENABLED": "false"}):
             setup_opentelemetry(app, "test-service")
 
-        # No middleware added (only log filter)
-        assert len(app.user_middleware) == initial_middleware
+        # Middleware IS added (populates ContextVars for log filter)
+        assert len(app.user_middleware) == initial_middleware + 1
         # Clean up log filter
         logging.getLogger().filters = [f for f in logging.getLogger().filters if not isinstance(f, TenantLogFilter)]
 
