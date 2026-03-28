@@ -137,7 +137,7 @@ log_config = {
             "filename": log_file,
             "maxBytes": 10485760,  # 10MB
             "backupCount": 5,
-            "filters": ["http_status_filter"],
+            "filters": ["http_status_filter", "tenant_log_filter"],
             "level": log_level,  # Set handler level based on the environment variable
         },
         "console": {
