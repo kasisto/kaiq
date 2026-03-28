@@ -308,5 +308,5 @@ async def test_conversation_message_format():
     # Verify message format - note that MockR2RStreamingAgent uses a hardcoded response
     assert last_message.role == "assistant", "Last message should be from assistant"
     assert "This is a test response with citations" in last_message.content, "Message content should include response"
-    assert "metadata" in last_message.dict(), "Message should include metadata"
+    assert "metadata" in last_message.model_dump(), "Message should include metadata"
     assert "citations" in last_message.metadata, "Message metadata should include citations"

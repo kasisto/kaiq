@@ -47,7 +47,7 @@ from typing import (
 )
 
 import requests
-from pydantic import BaseModel, Field, PrivateAttr
+from pydantic import BaseModel, ConfigDict, Field, PrivateAttr
 from typing_extensions import NotRequired
 
 logger = logging.getLogger()
@@ -144,8 +144,7 @@ class Serializable(BaseModel, ABC):
         """
         return [*cls.get_lc_namespace(), cls.__name__]
 
-    class Config:
-        extra = "ignore"
+    model_config = ConfigDict(extra="ignore")
 
     def __repr_args__(self) -> Any:
         return [
@@ -389,7 +388,7 @@ def _make_spacy_pipe_for_splitting(
     if pipe == "sentencizer":
         from spacy.lang.en import English
 
-        sentencizer = English()
+        sentencizer: Any = English()
         sentencizer.add_pipe("sentencizer")
     else:
         sentencizer = spacy.load(pipe, exclude=["ner", "tagger"])

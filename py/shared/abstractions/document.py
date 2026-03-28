@@ -7,7 +7,7 @@ from enum import Enum
 from typing import Any, Optional
 from uuid import UUID, uuid4
 
-from pydantic import Field
+from pydantic import ConfigDict, Field
 
 from .base import R2RSerializable
 from .llm import GenerationConfig
@@ -99,13 +99,11 @@ class Document(R2RSerializable):
     document_type: DocumentType
     metadata: dict
 
-    class Config:
-        arbitrary_types_allowed = True
-        ignore_extra = False
-        json_encoders = {
-            UUID: str,
-        }
-        populate_by_name = True
+    model_config = ConfigDict(
+        arbitrary_types_allowed=True,
+        extra="ignore",  # was ignore_extra=False (no-op in v1); keep permissive for API compat
+        populate_by_name=True,
+    )
 
 
 class IngestionStatus(str, Enum):
@@ -227,8 +225,8 @@ class DocumentResponse(R2RSerializable):
             "total_tokens": self.total_tokens or 0,  # ensure we pass 0 if None
         }
 
-    class Config:
-        json_schema_extra = {
+    model_config = ConfigDict(
+        json_schema_extra={
             "example": {
                 "id": "123e4567-e89b-12d3-a456-426614174000",
                 "collection_ids": ["123e4567-e89b-12d3-a456-426614174000"],
@@ -248,6 +246,7 @@ class DocumentResponse(R2RSerializable):
                 "total_tokens": 1000,
             }
         }
+    )
 
 
 class UnprocessedChunk(R2RSerializable):

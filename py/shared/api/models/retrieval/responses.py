@@ -1,6 +1,6 @@
 from typing import Any, Literal, Optional
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, ConfigDict, Field
 
 from shared.abstractions import (
     AggregateSearchResult,
@@ -78,9 +78,9 @@ class Citation(R2RSerializable):
         description="The complete source object (only included for new citations)",
     )
 
-    class Config:
-        extra = "ignore"
-        json_schema_extra = {
+    model_config = ConfigDict(
+        extra="ignore",
+        json_schema_extra={
             "example": {
                 "id": "e41ac2d",
                 "object": "citation",
@@ -98,7 +98,8 @@ class Citation(R2RSerializable):
                     "metadata": {"title": "Research Paper"},
                 },
             }
-        }
+        },
+    )
 
 
 # class Citation(R2RSerializable):
@@ -156,8 +157,8 @@ class RAGResponse(R2RSerializable):
         # deprecated=True,
     )
 
-    class Config:
-        json_schema_extra = {
+    model_config = ConfigDict(
+        json_schema_extra={
             "example": {
                 "generated_answer": "The capital of France is Paris.",
                 "search_results": {
@@ -252,6 +253,7 @@ class RAGResponse(R2RSerializable):
                 "completion": "TO BE DEPRECATED",
             }
         }
+    )
 
 
 class AgentResponse(R2RSerializable):
@@ -260,8 +262,8 @@ class AgentResponse(R2RSerializable):
         ..., description="The conversation ID for the RAG agent response"
     )
 
-    class Config:
-        json_schema_extra = {
+    model_config = ConfigDict(
+        json_schema_extra={
             "example": {
                 "messages": [
                     {
@@ -400,6 +402,7 @@ class AgentResponse(R2RSerializable):
                 "conversation_id": "a32b4c5d-6e7f-8a9b-0c1d-2e3f4a5b6c7d",
             }
         }
+    )
 
 
 class DocumentSearchResult(BaseModel):
@@ -505,9 +508,10 @@ class CitationData(BaseModel):
     )
 
     # For backward compatibility, maintain the existing fields
-    class Config:
-        populate_by_name = True
-        extra = "ignore"
+    model_config = ConfigDict(
+        populate_by_name=True,
+        extra="ignore",
+    )
 
 
 # CitationEvent remains the same, but now using the updated CitationData

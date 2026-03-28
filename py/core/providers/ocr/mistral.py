@@ -2,8 +2,8 @@ import logging
 import os
 from typing import Any
 
-from mistralai import Mistral
-from mistralai.models import OCRResponse
+from mistralai.client import Mistral
+from mistralai.client.models import OCRResponse
 
 from core.base.providers.ocr import OCRConfig, OCRProvider
 

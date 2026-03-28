@@ -86,7 +86,10 @@ log_config = {
     "filters": {
         "http_status_filter": {
             "()": HTTPStatusFilter,
-        }
+        },
+        "tenant_log_filter": {
+            "()": "core.utils.otel_setup.TenantLogFilter",
+        },
     },
     "formatters": {
         "default": {
@@ -109,11 +112,21 @@ log_config = {
         },
         "json": {
             "()": "pythonjsonlogger.json.JsonFormatter",
-            "format": log_format or "%(name)s %(levelname)s %(message)s",
+            "format": log_format
+            or "%(asctime)s %(name)s %(levelname)s %(message)s "
+            "%(org_id)s %(tenant_id)s %(user_id)s "
+            "%(otelTraceID)s %(otelSpanID)s",
             "rename_fields": {
                 "asctime": "time",
                 "levelname": "level",
                 "name": "logger",
+            },
+            "defaults": {
+                "org_id": "",
+                "tenant_id": "",
+                "user_id": "",
+                "otelTraceID": "",
+                "otelSpanID": "",
             },
         },
     },
@@ -124,14 +137,14 @@ log_config = {
             "filename": log_file,
             "maxBytes": 10485760,  # 10MB
             "backupCount": 5,
-            "filters": ["http_status_filter"],
+            "filters": ["http_status_filter", "tenant_log_filter"],
             "level": log_level,  # Set handler level based on the environment variable
         },
         "console": {
             "class": "logging.StreamHandler",
             "formatter": log_console_formatter,
             "stream": sys.stdout,
-            "filters": ["http_status_filter"],
+            "filters": ["http_status_filter", "tenant_log_filter"],
             "level": log_level,  # Set handler level based on the environment variable
         },
     },

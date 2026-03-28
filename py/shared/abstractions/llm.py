@@ -5,7 +5,7 @@ from enum import Enum
 from typing import TYPE_CHECKING, Any, ClassVar, Optional
 
 from openai.types.chat import ChatCompletionChunk
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, ConfigDict, Field
 
 from .base import R2RSerializable
 
@@ -270,9 +270,9 @@ class GenerationConfig(R2RSerializable):
     def __str__(self):
         return json.dumps(self.to_dict())
 
-    class Config:
-        populate_by_name = True
-        json_schema_extra = {
+    model_config = ConfigDict(
+        populate_by_name=True,
+        json_schema_extra={
             "example": {
                 "model": "openai/gpt-4.1",
                 "temperature": 0.1,
@@ -284,7 +284,8 @@ class GenerationConfig(R2RSerializable):
                 "add_generation_kwargs": None,
                 "api_base": None,
             }
-        }
+        },
+    )
 
 
 class MessageType(Enum):
@@ -312,9 +313,9 @@ class Message(R2RSerializable):
         None  # For base64 {media_type, data}
     )
 
-    class Config:
-        populate_by_name = True
-        json_schema_extra = {
+    model_config = ConfigDict(
+        populate_by_name=True,
+        json_schema_extra={
             "example": {
                 "role": "user",
                 "content": "This is a test message.",
@@ -322,4 +323,5 @@ class Message(R2RSerializable):
                 "function_call": None,
                 "tool_calls": None,
             }
-        }
+        },
+    )

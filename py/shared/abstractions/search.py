@@ -5,7 +5,7 @@ from enum import Enum
 from typing import Any, Optional
 from uuid import NAMESPACE_DNS, UUID, uuid5
 
-from pydantic import Field
+from pydantic import ConfigDict, Field
 
 from .base import R2RSerializable
 from .document import DocumentResponse
@@ -50,9 +50,9 @@ class ChunkSearchResult(R2RSerializable):
             "metadata": self.metadata,
         }
 
-    class Config:
-        populate_by_name = True
-        json_schema_extra = {
+    model_config = ConfigDict(
+        populate_by_name=True,
+        json_schema_extra={
             "example": {
                 "id": "3f3d47f3-8baf-58eb-8bc2-0171fb1c6e09",
                 "document_id": "3e157b3a-8469-51db-90d9-52e7d896b49b",
@@ -65,7 +65,8 @@ class ChunkSearchResult(R2RSerializable):
                     "associated_query": "What is the capital of France?",
                 },
             }
-        }
+        },
+    )
 
 
 class GraphSearchResultType(str, Enum):
@@ -80,14 +81,15 @@ class GraphEntityResult(R2RSerializable):
     description: str
     metadata: Optional[dict[str, Any]] = None
 
-    class Config:
-        json_schema_extra = {
+    model_config = ConfigDict(
+        json_schema_extra={
             "example": {
                 "name": "Entity Name",
                 "description": "Entity Description",
                 "metadata": {},
             }
-        }
+        },
+    )
 
 
 class GraphRelationshipResult(R2RSerializable):
@@ -101,14 +103,15 @@ class GraphRelationshipResult(R2RSerializable):
     score: Optional[float] = None
     description: str | None = None
 
-    class Config:
-        json_schema_extra = {
+    model_config = ConfigDict(
+        json_schema_extra={
             "example": {
                 "name": "Relationship Name",
                 "description": "Relationship Description",
                 "metadata": {},
             }
-        }
+        },
+    )
 
     def __str__(self) -> str:
         return f"GraphRelationshipResult(subject={self.subject}, predicate={self.predicate}, object={self.object})"
@@ -120,8 +123,8 @@ class GraphCommunityResult(R2RSerializable):
     summary: str
     metadata: Optional[dict[str, Any]] = None
 
-    class Config:
-        json_schema_extra = {
+    model_config = ConfigDict(
+        json_schema_extra={
             "example": {
                 "name": "Community Name",
                 "summary": "Community Summary",
@@ -129,7 +132,8 @@ class GraphCommunityResult(R2RSerializable):
                 "rating_explanation": "Rating Explanation",
                 "metadata": {},
             }
-        }
+        },
+    )
 
     def __str__(self) -> str:
         return (
@@ -148,9 +152,9 @@ class GraphSearchResult(R2RSerializable):
     def __str__(self) -> str:
         return f"GraphSearchResult(content={self.content}, result_type={self.result_type})"
 
-    class Config:
-        populate_by_name = True
-        json_schema_extra = {
+    model_config = ConfigDict(
+        populate_by_name=True,
+        json_schema_extra={
             "example": {
                 "content": {
                     "id": "3f3d47f3-8baf-58eb-8bc2-0171fb1c6e09",
@@ -164,7 +168,8 @@ class GraphSearchResult(R2RSerializable):
                     "associated_query": "What is the capital of France?"
                 },
             }
-        }
+        },
+    )
 
 
 class WebPageSearchResult(R2RSerializable):
@@ -177,8 +182,8 @@ class WebPageSearchResult(R2RSerializable):
     sitelinks: Optional[list[dict]] = None
     id: UUID
 
-    class Config:
-        json_schema_extra = {
+    model_config = ConfigDict(
+        json_schema_extra={
             "example": {
                 "title": "Page Title",
                 "link": "https://example.com/page",
@@ -192,7 +197,8 @@ class WebPageSearchResult(R2RSerializable):
                     }
                 ],
             }
-        }
+        },
+    )
 
     def __str__(self) -> str:
         return f"WebPageSearchResult(title={self.title}, link={self.link}, snippet={self.snippet})"
@@ -306,9 +312,9 @@ class AggregateSearchResult(R2RSerializable):
             ),
         }
 
-    class Config:
-        populate_by_name = True
-        json_schema_extra = {
+    model_config = ConfigDict(
+        populate_by_name=True,
+        json_schema_extra={
             "example": {
                 "chunk_search_results": [
                     {
@@ -386,7 +392,8 @@ class AggregateSearchResult(R2RSerializable):
                     }
                 ],
             }
-        }
+        },
+    )
 
 
 class HybridSearchSettings(R2RSerializable):
@@ -522,10 +529,9 @@ class SearchSettings(R2RSerializable):
         description="Number of sub-queries/hypothetical docs to generate when using hyde or rag_fusion search strategies.",
     )
 
-    class Config:
-        populate_by_name = True
-        json_encoders = {UUID: str}
-        json_schema_extra = {
+    model_config = ConfigDict(
+        populate_by_name=True,
+        json_schema_extra={
             "example": {
                 "use_semantic_search": True,
                 "use_fulltext_search": False,
@@ -549,7 +555,7 @@ class SearchSettings(R2RSerializable):
                 },
                 "graph_settings": {
                     "enabled": True,
-                    "generation_config": GenerationConfig.Config.json_schema_extra,
+                    "generation_config": GenerationConfig.model_config["json_schema_extra"],  # type: ignore[dict-item]
                     "max_community_description_length": 65536,
                     "max_llm_queries_for_global_search": 250,
                     "limits": {
@@ -559,7 +565,8 @@ class SearchSettings(R2RSerializable):
                     },
                 },
             }
-        }
+        },
+    )
 
     def __init__(self, **data):
         # Handle legacy search_filters field

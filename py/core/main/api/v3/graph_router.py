@@ -1948,9 +1948,21 @@ class GraphRouter(BaseRouterV3):
                 results = cast(list[DocumentResponse], document_req["results"])
                 documents.extend(results)
 
-            success = False
+            added = 0
+            skipped = 0
+            no_entities = 0
+            failed = False
+
+            # Fetch existing doc IDs in one query instead of N
+            # has_document() calls.
+            graph_obj = list_graphs_response["results"][0]
+            existing_doc_ids = set(graph_obj.document_ids or [])
 
             for document in documents:
+                if document.id in existing_doc_ids:
+                    skipped += 1
+                    continue
+
                 entities = (
                     await self.providers.database.graphs_handler.entities.get(
                         parent_id=document.id,
@@ -1959,38 +1971,29 @@ class GraphRouter(BaseRouterV3):
                         limit=100,
                     )
                 )
-                has_document = (
-                    await self.providers.database.graphs_handler.has_document(
-                        collection_id, document.id
-                    )
-                )
-                if has_document:
-                    logger.info(
-                        f"Document {document.id} is already in graph {collection_id}, skipping."
-                    )
+                if len(entities[0]) == 0 and not force:
+                    no_entities += 1
                     continue
-                if len(entities[0]) == 0:
-                    if not force:
-                        logger.warning(
-                            f"Document {document.id} has no entities, extraction may not have been called, skipping."
-                        )
-                        continue
-                    else:
-                        logger.warning(
-                            f"Document {document.id} has no entities, but force=True, continuing."
-                        )
 
-                success = (
+                result = (
                     await self.providers.database.graphs_handler.add_documents(
                         id=collection_id,
                         document_ids=[document.id],
                     )
                 )
-            if not success:
-                logger.warning(
-                    f"No documents were added to graph {collection_id}, marking as failed."
-                )
+                if result:
+                    added += 1
+                else:
+                    failed = True
 
+            logger.info(
+                "Graph pull for %s: %d added, %d already present, "
+                "%d no entities, %d total docs.",
+                collection_id, added, skipped, no_entities,
+                len(documents),
+            )
+
+            success = not failed
             if success:
                 await self.providers.database.documents_handler.set_workflow_status(
                     id=collection_id,

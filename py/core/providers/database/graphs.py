@@ -11,7 +11,6 @@ from typing import IO, Any, AsyncGenerator, Optional, Tuple
 from uuid import UUID
 
 import asyncpg
-import httpx
 from asyncpg.exceptions import UniqueViolationError
 from fastapi import HTTPException
 
@@ -2429,7 +2428,9 @@ class PostgresGraphsHandler(Handler):
 
         payload = {"relationships": rel_data, "leiden_params": leiden_params}
 
-        async with httpx.AsyncClient() as client:
+        from httpx_aiohttp import HttpxAiohttpClient
+
+        async with HttpxAiohttpClient() as client:
             response = await client.post(url, json=payload, timeout=3600)
             response.raise_for_status()
 

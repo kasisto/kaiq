@@ -2,7 +2,7 @@
 import asyncio
 import json
 import logging
-from datetime import datetime
+from datetime import datetime, timezone
 from typing import Any, AsyncGenerator, Optional, Sequence
 from uuid import UUID
 
@@ -36,8 +36,39 @@ from shared.abstractions import PDFParsingError, PopplerNotFoundError
 from ..abstractions import R2RProviders
 from ..config import R2RConfig
 
+from core.utils.otel_setup import (
+    classify_error,
+    create_bytes_histogram,
+    create_duration_histogram,
+    get_meter,
+    get_tenant_context,
+)
+
 logger = logging.getLogger()
 STARTING_VERSION = "v0"
+
+# ── OTel Metrics (lazy, module-level singletons) ──
+_meter = get_meter("r2r.ingestion")
+_documents_counter = _meter.create_counter(
+    "r2r.ingestion.documents_total",
+    unit="{document}",
+    description="Total documents ingested",
+)
+_chunks_counter = _meter.create_counter(
+    "r2r.ingestion.chunks_total",
+    unit="{chunk}",
+    description="Total chunks stored",
+)
+_ingestion_duration = create_duration_histogram(
+    _meter,
+    "r2r.ingestion.duration_seconds",
+    description="End-to-end ingestion pipeline duration",
+)
+_document_size_bytes = create_bytes_histogram(
+    _meter,
+    "r2r.ingestion.document_size_bytes",
+    description="Size of ingested documents in bytes",
+)
 
 
 class IngestionService:
@@ -508,10 +539,24 @@ class IngestionService:
                 logger.error(f"Failed to store final vector batch: {e}")
                 yield f"Error: {e}"
 
-        # Summaries
+        # Summaries + OTel chunk metrics
         for doc_id, cnt in document_counts.items():
             info_msg = f"Successful ingestion for document_id: {doc_id}, with vector count: {cnt}"
             logger.info(info_msg)
+            try:
+                ctx = get_tenant_context()
+                _chunks_counter.add(
+                    cnt,
+                    {
+                        "org_id": ctx.get("org_id", ""),
+                        "tenant_id": ctx.get("tenant_id", ""),
+                    },
+                )
+            except Exception:
+                logger.debug(
+                    "Failed to record chunk metrics",
+                    exc_info=True,
+                )
             yield info_msg
 
     async def finalize_ingestion(
@@ -526,6 +571,53 @@ class IngestionService:
         await self.update_document_status(
             document_info, IngestionStatus.SUCCESS
         )
+
+        # Record document success metric + approximate pipeline duration.
+        # NOTE: Hatchet ingestion workflow steps now call
+        # set_tenant_context_from_metadata() at step entry, so tenant
+        # context should be available here for ingestion workflows.
+        # Graph workflows still lack tenant context (tracked separately).
+        try:
+            ctx = get_tenant_context()
+            doc_type = (
+                document_info.document_type.value
+                if document_info.document_type
+                else "unknown"
+            )
+            # document_type cardinality is bounded (~30 values from the
+            # DocumentType enum: PDF, DOCX, TXT, HTML, etc.), so it is
+            # safe to use as a metric attribute without causing high-
+            # cardinality issues in the TSDB.
+            _attrs = {
+                "org_id": ctx.get("org_id", ""),
+                "tenant_id": ctx.get("tenant_id", ""),
+                "document_type": doc_type,
+            }
+            _documents_counter.add(
+                1, {**_attrs, "status": "success"}
+            )
+            # Approximate duration from document creation to finalization
+            if document_info.created_at:
+                created_at = document_info.created_at
+                # Guard: if created_at is naive (no tzinfo), assume UTC
+                if created_at.tzinfo is None:
+                    created_at = created_at.replace(tzinfo=timezone.utc)
+                _elapsed = (
+                    datetime.now(timezone.utc) - created_at
+                ).total_seconds()
+                if _elapsed > 0:
+                    _ingestion_duration.record(_elapsed, _attrs)
+            # Record document size for capacity planning
+            if document_info.size_in_bytes:
+                _document_size_bytes.record(
+                    document_info.size_in_bytes, _attrs
+                )
+        except Exception:
+            logger.debug(
+                "Failed to record ingestion document metric",
+                exc_info=True,
+            )
+
         return empty_generator()
 
     async def update_document_status(
@@ -538,6 +630,39 @@ class IngestionService:
         if metadata:
             document_info.metadata = {**document_info.metadata, **metadata}
         await self._update_document_status_in_db(document_info)
+
+        # Record failure metric (success is recorded in finalize_ingestion)
+        if status == IngestionStatus.FAILED:
+            try:
+                ctx = get_tenant_context()
+                doc_type = (
+                    document_info.document_type.value
+                    if document_info.document_type
+                    else "unknown"
+                )
+                # Classify error from failure metadata if available
+                error_type = "unknown"
+                if metadata and metadata.get("failure"):
+                    failure_msg = str(metadata["failure"])
+                    # Create a synthetic exception for classification
+                    error_type = classify_error(
+                        Exception(failure_msg)
+                    )
+                _documents_counter.add(
+                    1,
+                    {
+                        "org_id": ctx.get("org_id", ""),
+                        "tenant_id": ctx.get("tenant_id", ""),
+                        "status": "failure",
+                        "document_type": doc_type,
+                        "error_type": error_type,
+                    },
+                )
+            except Exception:
+                logger.debug(
+                    "Failed to record ingestion failure metric",
+                    exc_info=True,
+                )
 
     async def _update_document_status_in_db(
         self, document_info: DocumentResponse
@@ -883,7 +1008,16 @@ class IngestionService:
 
             # Process in batches of e.g. 128 concurrency
             if len(tasks) == 128:
-                new_vector_entries.extend(await asyncio.gather(*tasks))
+                results = await asyncio.gather(*tasks, return_exceptions=True)
+                failed = [r for r in results if isinstance(r, Exception)]
+                if failed:
+                    logger.error(
+                        "Chunk enrichment batch: %d/%d tasks failed for document %s",
+                        len(failed), len(results), document_id,
+                    )
+                    for f in failed:
+                        logger.error("Chunk enrichment error: %s", f)
+                new_vector_entries.extend(r for r in results if not isinstance(r, BaseException))
                 total_completed += 128
                 logger.info(
                     f"Completed {total_completed} out of {len(list_document_chunks)} chunks for document {document_id}"
@@ -891,9 +1025,29 @@ class IngestionService:
                 tasks = []
 
         # Finish any remaining tasks
-        new_vector_entries.extend(await asyncio.gather(*tasks))
+        if tasks:
+            results = await asyncio.gather(*tasks, return_exceptions=True)
+            failed = [r for r in results if isinstance(r, Exception)]
+            if failed:
+                logger.error(
+                    "Chunk enrichment remainder: %d/%d tasks failed for document %s",
+                    len(failed), len(results), document_id,
+                )
+                for f in failed:
+                    logger.error("Chunk enrichment error: %s", f)
+            new_vector_entries.extend(r for r in results if not isinstance(r, BaseException))
+
+        total_chunks = len(list_document_chunks)
+        total_enriched = len(new_vector_entries)
+        total_failed = total_chunks - total_enriched
+        if total_failed > 0:
+            logger.warning(
+                "%d of %d chunks failed enrichment for document %s"
+                " — document will be partially enriched",
+                total_failed, total_chunks, document_id,
+            )
         logger.info(
-            f"Completed enrichment of {len(list_document_chunks)} chunks for document {document_id}"
+            f"Completed enrichment of {total_enriched}/{total_chunks} chunks for document {document_id}"
         )
 
         # Delete old chunks from vector db

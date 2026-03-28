@@ -5,7 +5,7 @@ from enum import Enum
 from typing import Any, Optional
 from uuid import UUID
 
-from pydantic import Field
+from pydantic import ConfigDict, Field
 
 from ..abstractions.llm import GenerationConfig
 from .base import R2RSerializable
@@ -123,9 +123,7 @@ class Graph(R2RSerializable):
     )
     status: str = "pending"
 
-    class Config:
-        populate_by_name = True
-        from_attributes = True
+    model_config = ConfigDict(populate_by_name=True, from_attributes=True)
 
     @classmethod
     def from_dict(cls, data: dict[str, Any] | str) -> "Graph":

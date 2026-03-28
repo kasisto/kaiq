@@ -16,13 +16,13 @@ from core.base import (
     RecursiveCharacterTextSplitter,
     TextSplitter,
 )
+from core.base.providers.ingestion import SemanticParsingLimitExceeded
 from core.providers.database import PostgresDatabaseProvider
 from core.providers.llm import (
     LiteLLMCompletionProvider,
     OpenAICompletionProvider,
     R2RCompletionProvider,
 )
-from core.base.providers.ingestion import SemanticParsingLimitExceeded
 from core.providers.ocr import MistralOCRProvider
 from core.utils import generate_extraction_id
 from core.utils.semantic_metadata import parse_semantic_metadata
@@ -313,7 +313,10 @@ class R2RIngestionProvider(IngestionProvider):
             if document.document_type.value in parser_overrides:
                 override_parser_name = parser_overrides[document.document_type.value]
                 logger.info(
-                    f"Using parser_override for {document.document_type} with input value {override_parser_name}"
+                    "Using parser_override %s for %s (document_id=%s)",
+                    override_parser_name,
+                    document.document_type,
+                    document.id,
                 )
 
                 # Handle FAQ parser for CSV files

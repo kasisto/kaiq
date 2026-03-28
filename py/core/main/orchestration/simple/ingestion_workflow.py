@@ -7,7 +7,6 @@ from litellm import AuthenticationError
 
 from core.base import (
     DocumentChunk,
-    GraphConstructionStatus,
     GraphExtractionStatus,
     R2RException,
 )
@@ -15,13 +14,16 @@ from core.utils import (
     generate_default_user_collection_id,
     generate_extraction_id,
     num_tokens,
-    update_settings_from_dict,
 )
 
 from ...services import IngestionService
-from ..hatchet.ingestion_workflow import should_skip_graph_extraction
+from ..hatchet.ingestion_workflow import (  # type: ignore[attr-defined]
+    _assign_doc_to_collection,
+    _maybe_enrich_chunks,
+    should_skip_graph_extraction,
+)
 
-logger = logging.getLogger()
+logger = logging.getLogger(__name__)
 
 
 def simple_ingestion_factory(service: IngestionService):
@@ -100,116 +102,42 @@ def simple_ingestion_factory(service: IngestionService):
 
             try:
                 if not collection_ids:
-                    # TODO: Move logic onto the `management service`
                     collection_id = generate_default_user_collection_id(
                         document_info.owner_id
                     )
-                    await service.providers.database.collections_handler.assign_document_to_collection_relational(
-                        document_id=document_info.id,
-                        collection_id=collection_id,
-                    )
-                    await service.providers.database.chunks_handler.assign_document_chunks_to_collection(
-                        document_id=document_info.id,
-                        collection_id=collection_id,
-                    )
-                    await service.providers.database.documents_handler.set_workflow_status(
-                        id=collection_id,
-                        status_type="graph_sync_status",
-                        status=GraphConstructionStatus.OUTDATED,
-                    )
-                    await service.providers.database.documents_handler.set_workflow_status(
-                        id=collection_id,
-                        status_type="graph_cluster_status",
-                        status=GraphConstructionStatus.OUTDATED,  # NOTE - we should actually check that cluster has been made first, if not it should be PENDING still
+                    await _assign_doc_to_collection(
+                        service, document_info, collection_id,
                     )
                 else:
                     for collection_id in collection_ids:
                         try:
-                            # FIXME: Right now we just throw a warning if the collection already exists, but we should probably handle this more gracefully
-                            name = "My Collection"
-                            description = f"A collection started during {document_info.title} ingestion"
-
+                            name = document_info.title or "N/A"
                             await service.providers.database.collections_handler.create_collection(
                                 owner_id=document_info.owner_id,
-                                name=name,
-                                description=description,
+                                name=name, description="",
                                 collection_id=collection_id,
                             )
                             await service.providers.database.graphs_handler.create(
                                 collection_id=collection_id,
-                                name=name,
-                                description=description,
+                                name=name, description="",
                                 graph_id=collection_id,
                             )
                         except Exception as e:
                             logger.warning(
-                                f"Warning, could not create collection with error: {str(e)}"
+                                "Could not create collection: %s", e,
                             )
-
-                        await service.providers.database.collections_handler.assign_document_to_collection_relational(
-                            document_id=document_info.id,
-                            collection_id=collection_id,
-                        )
-
-                        await service.providers.database.chunks_handler.assign_document_chunks_to_collection(
-                            document_id=document_info.id,
-                            collection_id=collection_id,
-                        )
-                        await service.providers.database.documents_handler.set_workflow_status(
-                            id=collection_id,
-                            status_type="graph_sync_status",
-                            status=GraphConstructionStatus.OUTDATED,
-                        )
-                        await service.providers.database.documents_handler.set_workflow_status(
-                            id=collection_id,
-                            status_type="graph_cluster_status",
-                            status=GraphConstructionStatus.OUTDATED,  # NOTE - we should actually check that cluster has been made first, if not it should be PENDING still
+                        await _assign_doc_to_collection(
+                            service, document_info, collection_id,
                         )
             except Exception as e:
                 logger.error(
-                    f"Error during assigning document to collection: {str(e)}"
+                    "Error assigning document to collection: %s", e,
                 )
 
             # Chunk enrichment
-            if server_chunk_enrichment_settings := getattr(
-                service.providers.ingestion.config,
-                "chunk_enrichment_settings",
-                None,
-            ):
-                chunk_enrichment_settings = update_settings_from_dict(
-                    server_chunk_enrichment_settings,
-                    ingestion_config.get("chunk_enrichment_settings", {})
-                    or {},
-                )
-
-                if chunk_enrichment_settings.enable_chunk_enrichment:
-                    logger.info("Enriching document with contextual chunks")
-
-                    # Get updated document info with collection IDs
-                    document_info = (
-                        await service.providers.database.documents_handler.get_documents_overview(
-                            offset=0,
-                            limit=100,
-                            filter_user_ids=[document_info.owner_id],
-                            filter_document_ids=[document_info.id],
-                        )
-                    )["results"][0]
-
-                    await service.update_document_status(
-                        document_info,
-                        status=IngestionStatus.ENRICHING,
-                    )
-
-                    await service.chunk_enrichment(
-                        document_id=document_info.id,
-                        document_summary=document_info.summary,
-                        chunk_enrichment_settings=chunk_enrichment_settings,
-                    )
-
-                    await service.update_document_status(
-                        document_info,
-                        status=IngestionStatus.SUCCESS,
-                    )
+            await _maybe_enrich_chunks(
+                service, document_info, ingestion_config,
+            )
 
             # Automatic extraction
             if service.providers.ingestion.config.automatic_extraction:
@@ -237,7 +165,8 @@ def simple_ingestion_factory(service: IngestionService):
                         status=GraphExtractionStatus.SUCCESS,
                     )
                     logger.info(
-                        f"Graph extraction skipped for document {document_info.id}"
+                        "Graph extraction skipped for document %s",
+                        document_info.id,
                     )
 
         except AuthenticationError as e:
@@ -245,7 +174,7 @@ def simple_ingestion_factory(service: IngestionService):
                 await service.update_document_status(
                     document_info,
                     status=IngestionStatus.FAILED,
-                    metadata={"failure": f"{str(e)}"},
+                    metadata={"failure": str(e)},
                 )
             raise R2RException(
                 status_code=401,
@@ -256,7 +185,7 @@ def simple_ingestion_factory(service: IngestionService):
                 await service.update_document_status(
                     document_info,
                     status=IngestionStatus.FAILED,
-                    metadata={"failure": f"{str(e)}"},
+                    metadata={"failure": str(e)},
                 )
             if isinstance(e, R2RException):
                 raise
@@ -322,82 +251,47 @@ def simple_ingestion_factory(service: IngestionService):
             )
 
             try:
-                # TODO - Move logic onto management service
                 if not collection_ids:
                     collection_id = generate_default_user_collection_id(
                         document_info.owner_id
                     )
-
-                    await service.providers.database.collections_handler.assign_document_to_collection_relational(
-                        document_id=document_info.id,
-                        collection_id=collection_id,
+                    await _assign_doc_to_collection(
+                        service, document_info, collection_id,
                     )
-
-                    await service.providers.database.chunks_handler.assign_document_chunks_to_collection(
-                        document_id=document_info.id,
-                        collection_id=collection_id,
-                    )
-
-                    await service.providers.database.documents_handler.set_workflow_status(
-                        id=collection_id,
-                        status_type="graph_sync_status",
-                        status=GraphConstructionStatus.OUTDATED,
-                    )
-                    await service.providers.database.documents_handler.set_workflow_status(
-                        id=collection_id,
-                        status_type="graph_cluster_status",
-                        status=GraphConstructionStatus.OUTDATED,  # NOTE - we should actually check that cluster has been made first, if not it should be PENDING still
-                    )
-
                 else:
                     for collection_id in collection_ids:
                         try:
                             name = document_info.title or "N/A"
-                            description = ""
-                            result = await service.providers.database.collections_handler.create_collection(
+                            await service.providers.database.collections_handler.create_collection(
                                 owner_id=document_info.owner_id,
-                                name=name,
-                                description=description,
+                                name=name, description="",
                                 collection_id=collection_id,
                             )
                             await service.providers.database.graphs_handler.create(
                                 collection_id=collection_id,
-                                name=name,
-                                description=description,
+                                name=name, description="",
                                 graph_id=collection_id,
                             )
                         except Exception as e:
                             logger.warning(
-                                f"Warning, could not create collection with error: {str(e)}"
+                                "Could not create collection: %s", e,
                             )
-                        await service.providers.database.collections_handler.assign_document_to_collection_relational(
-                            document_id=document_info.id,
-                            collection_id=collection_id,
-                        )
-                        await service.providers.database.chunks_handler.assign_document_chunks_to_collection(
-                            document_id=document_info.id,
-                            collection_id=collection_id,
-                        )
-                        await service.providers.database.documents_handler.set_workflow_status(
-                            id=collection_id,
-                            status_type="graph_sync_status",
-                            status=GraphConstructionStatus.OUTDATED,
-                        )
-                        await service.providers.database.documents_handler.set_workflow_status(
-                            id=collection_id,
-                            status_type="graph_cluster_status",
-                            status=GraphConstructionStatus.OUTDATED,  # NOTE - we should actually check that cluster has been made first, if not it should be PENDING still
+                        await _assign_doc_to_collection(
+                            service, document_info, collection_id,
                         )
 
-                    if service.providers.ingestion.config.automatic_extraction:
-                        raise R2RException(
-                            status_code=501,
-                            message="Automatic extraction not yet implemented for `simple` ingestion workflows.",
-                        ) from None
-
+            except R2RException:
+                raise
             except Exception as e:
                 logger.error(
-                    f"Error during assigning document to collection: {str(e)}"
+                    "Error assigning document to collection: %s", e,
+                )
+
+            if service.providers.ingestion.config.automatic_extraction:
+                raise R2RException(
+                    status_code=501,
+                    message="Automatic extraction not yet implemented "
+                    "for `simple` ingestion workflows.",
                 )
 
         except Exception as e:
@@ -405,8 +299,10 @@ def simple_ingestion_factory(service: IngestionService):
                 await service.update_document_status(
                     document_info,
                     status=IngestionStatus.FAILED,
-                    metadata={"failure": f"{str(e)}"},
+                    metadata={"failure": str(e)},
                 )
+            if isinstance(e, R2RException):
+                raise
             raise HTTPException(
                 status_code=500,
                 detail=f"Error during chunk ingestion: {str(e)}",

@@ -2,7 +2,7 @@ from datetime import datetime
 from typing import Optional
 from uuid import UUID
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, ConfigDict, Field
 
 from shared.abstractions import R2RSerializable
 
@@ -20,9 +20,7 @@ class Collection(BaseModel):
         default_factory=datetime.utcnow,
     )
 
-    class Config:
-        populate_by_name = True
-        from_attributes = True
+    model_config = ConfigDict(populate_by_name=True, from_attributes=True)
 
     def __init__(self, **data):
         super().__init__(**data)
