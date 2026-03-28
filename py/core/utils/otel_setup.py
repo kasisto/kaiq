@@ -303,6 +303,31 @@ def create_count_histogram(
         )
 
 
+def create_histogram_with_buckets(
+    meter: Any,
+    name: str,
+    buckets: list[float],
+    description: str = "",
+    unit: str = "",
+) -> Any:
+    """Create a histogram with caller-specified bucket boundaries.
+
+    This is useful for metrics that don't fit the pre-defined duration,
+    bytes, or count bucket sets (e.g., score distributions, TTFT).
+    """
+    try:
+        return meter.create_histogram(
+            name,
+            unit=unit,
+            description=description,
+            explicit_bucket_boundaries_advisory=buckets,
+        )
+    except TypeError:
+        return meter.create_histogram(
+            name, unit=unit, description=description,
+        )
+
+
 # ── Setup ──
 
 def setup_opentelemetry(

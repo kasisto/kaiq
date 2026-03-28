@@ -59,6 +59,7 @@ import time
 from core.utils.otel_setup import (
     create_count_histogram,
     create_duration_histogram,
+    create_histogram_with_buckets,
     get_meter,
     get_tenant_context,
 )
@@ -87,6 +88,26 @@ _search_zero_results = _meter.create_counter(
     "r2r.search.zero_results_total",
     unit="{request}",
     description="Total search requests that returned zero results",
+)
+_SCORE_BUCKETS: list[float] = [
+    0.0, 0.1, 0.2, 0.3, 0.4, 0.5, 0.6, 0.7, 0.8, 0.9, 1.0,
+]
+_search_score_mean = create_histogram_with_buckets(
+    _meter,
+    "r2r.search.score_mean",
+    buckets=_SCORE_BUCKETS,
+    description="Mean relevance score of chunk search results",
+)
+_search_score_min = create_histogram_with_buckets(
+    _meter,
+    "r2r.search.score_min",
+    buckets=_SCORE_BUCKETS,
+    description="Minimum relevance score of chunk search results",
+)
+_rag_phase_duration = create_duration_histogram(
+    _meter,
+    "r2r.rag.phase_duration_seconds",
+    description="Duration of individual RAG phases (retrieval, generation)",
 )
 
 
@@ -342,6 +363,23 @@ class RetrievalService(Service):
                     # Tier 3 #13: Track zero-result searches
                     if _n_results == 0:
                         _search_zero_results.add(1, _attrs)
+                    # Score distribution metrics
+                    try:
+                        _scores = [
+                            r.score
+                            for r in result.chunk_search_results
+                            if r.score is not None
+                        ]
+                        if _scores:
+                            _search_score_mean.record(
+                                sum(_scores) / len(_scores),
+                                _attrs,
+                            )
+                            _search_score_min.record(
+                                min(_scores), _attrs,
+                            )
+                    except Exception:
+                        pass
             except Exception:
                 logger.debug(
                     "Failed to record search metrics",
@@ -1081,6 +1119,8 @@ class RetrievalService(Service):
                 search_settings.filters[f] = str(val)
 
         try:
+            _rag_start = time.monotonic()
+
             # 2) Perform search => aggregated_results
             aggregated_results = await self.search(query, search_settings)
             # 3) Optionally add web search results if flag is enabled
@@ -1113,6 +1153,22 @@ class RetrievalService(Service):
                 task_prompt=task_prompt,
             )
 
+            # Record retrieval phase duration
+            try:
+                _retrieval_elapsed = time.monotonic() - _rag_start
+                ctx = get_tenant_context()
+                _phase_attrs = {
+                    "org_id": ctx.get("org_id", ""),
+                    "tenant_id": ctx.get("tenant_id", ""),
+                    "phase": "retrieval",
+                }
+                _rag_phase_duration.record(
+                    _retrieval_elapsed, _phase_attrs
+                )
+            except Exception:
+                pass
+            _gen_start = time.monotonic()
+
             # 5) Check streaming vs. non-streaming
             if not rag_generation_config.stream:
                 # ========== Non-Streaming Logic ==========
@@ -1120,6 +1176,21 @@ class RetrievalService(Service):
                     messages=messages,
                     generation_config=rag_generation_config,
                 )
+                # Record generation phase duration
+                try:
+                    _gen_elapsed = time.monotonic() - _gen_start
+                    ctx = get_tenant_context()
+                    _rag_phase_duration.record(
+                        _gen_elapsed,
+                        {
+                            "org_id": ctx.get("org_id", ""),
+                            "tenant_id": ctx.get("tenant_id", ""),
+                            "phase": "generation",
+                        },
+                    )
+                except Exception:
+                    pass
+
                 llm_text = response.choices[0].message.content
 
                 # (a) Extract short-ID references from final text
@@ -1304,6 +1375,25 @@ class RetrievalService(Service):
                         logger.error(f"Error streaming LLM in rag: {e}")
                         # Optionally yield an SSE "error" event or handle differently
                         raise
+                    finally:
+                        # Record streaming generation phase
+                        try:
+                            _gen_elapsed = (
+                                time.monotonic() - _gen_start
+                            )
+                            ctx = get_tenant_context()
+                            _rag_phase_duration.record(
+                                _gen_elapsed,
+                                {
+                                    "org_id": ctx.get("org_id", ""),
+                                    "tenant_id": ctx.get(
+                                        "tenant_id", ""
+                                    ),
+                                    "phase": "generation",
+                                },
+                            )
+                        except Exception:
+                            pass
 
                 return sse_generator()
 

@@ -19,6 +19,7 @@ from .base import Provider, ProviderConfig
 from core.utils.otel_setup import (
     classify_error,
     create_duration_histogram,
+    create_histogram_with_buckets,
     get_meter,
     get_tenant_context,
 )
@@ -51,6 +52,13 @@ _llm_concurrent = _meter.create_up_down_counter(
     "r2r.llm.concurrent_requests",
     unit="{request}",
     description="Current number of in-flight LLM requests",
+)
+_llm_ttft = create_histogram_with_buckets(
+    _meter,
+    "r2r.llm.time_to_first_token_seconds",
+    buckets=[0.05, 0.1, 0.2, 0.5, 1.0, 2.0, 5.0, 10.0],
+    unit="s",
+    description="Time from request start to first content token (streaming)",
 )
 
 
@@ -421,6 +429,51 @@ class CompletionProvider(Provider):
                         completion.usage.completion_tokens,
                         {**_base_attrs, "token_type": "completion"},
                     )
+                # Cached token tracking
+                try:
+                    _cached_read = 0
+                    _cached_creation = 0
+                    # OpenAI: prompt_tokens_details.cached_tokens
+                    _details = getattr(
+                        completion.usage,
+                        "prompt_tokens_details",
+                        None,
+                    )
+                    if _details:
+                        _ct = getattr(_details, "cached_tokens", 0)
+                        if _ct:
+                            _cached_read = _ct
+                    # Anthropic: cache_read_input_tokens
+                    _cr = getattr(
+                        completion.usage,
+                        "cache_read_input_tokens",
+                        0,
+                    )
+                    if _cr:
+                        _cached_read = _cr
+                    # Anthropic: cache_creation_input_tokens
+                    _cc = getattr(
+                        completion.usage,
+                        "cache_creation_input_tokens",
+                        0,
+                    )
+                    if _cc:
+                        _cached_creation = _cc
+                    if _cached_read:
+                        _llm_tokens.add(
+                            _cached_read,
+                            {**_base_attrs, "token_type": "cached_read"},
+                        )
+                    if _cached_creation:
+                        _llm_tokens.add(
+                            _cached_creation,
+                            {
+                                **_base_attrs,
+                                "token_type": "cached_creation",
+                            },
+                        )
+                except Exception:
+                    pass
         except Exception:
             logger.debug(
                 "Failed to record LLM metrics", exc_info=True
@@ -437,6 +490,9 @@ class CompletionProvider(Provider):
         _start = time.monotonic()
         _total_prompt = 0
         _total_completion = 0
+        _first_token_recorded = False
+        _cached_read_tokens = 0
+        _cached_creation_tokens = 0
 
         generation_config.stream = True
         task = {
@@ -458,6 +514,59 @@ class CompletionProvider(Provider):
                     and chunk.usage.completion_tokens is not None
                 ):
                     _total_completion = chunk.usage.completion_tokens
+                # Cached token tracking (final chunk)
+                try:
+                    _details = getattr(
+                        chunk.usage, "prompt_tokens_details", None
+                    )
+                    if _details:
+                        _ct = getattr(_details, "cached_tokens", 0)
+                        if _ct:
+                            _cached_read_tokens = _ct
+                    _cr = getattr(
+                        chunk.usage, "cache_read_input_tokens", 0
+                    )
+                    if _cr:
+                        _cached_read_tokens = _cr
+                    _cc = getattr(
+                        chunk.usage, "cache_creation_input_tokens", 0
+                    )
+                    if _cc:
+                        _cached_creation_tokens = _cc
+                except Exception:
+                    pass
+
+            # TTFT: record time to first content token
+            if not _first_token_recorded:
+                try:
+                    _has_content = False
+                    if isinstance(chunk, dict):
+                        _has_content = bool(
+                            chunk.get("choices", [{}])[0]
+                            .get("delta", {})
+                            .get("content")
+                        )
+                    elif (
+                        hasattr(chunk, "choices")
+                        and chunk.choices
+                        and len(chunk.choices) > 0
+                    ):
+                        _delta = getattr(
+                            chunk.choices[0], "delta", None
+                        )
+                        if _delta and getattr(_delta, "content", None):
+                            _has_content = True
+                    if _has_content:
+                        _ttft = time.monotonic() - _start
+                        ctx = get_tenant_context()
+                        _model = generation_config.model or "unknown"
+                        _llm_ttft.record(
+                            _ttft,
+                            _build_llm_attrs(_model, ctx),
+                        )
+                        _first_token_recorded = True
+                except Exception:
+                    _first_token_recorded = True
 
             if isinstance(chunk, dict):
                 yield LLMChatCompletionChunk(**chunk)
@@ -496,6 +605,16 @@ class CompletionProvider(Provider):
                 _llm_tokens.add(
                     _total_completion,
                     {**_base_attrs, "token_type": "completion"},
+                )
+            if _cached_read_tokens:
+                _llm_tokens.add(
+                    _cached_read_tokens,
+                    {**_base_attrs, "token_type": "cached_read"},
+                )
+            if _cached_creation_tokens:
+                _llm_tokens.add(
+                    _cached_creation_tokens,
+                    {**_base_attrs, "token_type": "cached_creation"},
                 )
         except Exception:
             logger.debug(
