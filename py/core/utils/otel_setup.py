@@ -57,6 +57,29 @@ def get_tenant_context() -> dict[str, str]:
     }
 
 
+def set_tenant_context(
+    org_id: str = "", tenant_id: str = "", user_id: str = "",
+) -> None:
+    """Manually set tenant ContextVars (for non-HTTP contexts like Hatchet workers)."""
+    _org_id_var.set(org_id)
+    _tenant_id_var.set(tenant_id)
+    _user_id_var.set(user_id)
+
+
+def set_tenant_context_from_metadata(metadata: dict) -> None:
+    """Extract org/tenant from document metadata and set ContextVars.
+
+    Kaigentic's knowledge-service injects org_id and tenant_id into document
+    metadata. This function reads them and populates the ContextVars so that
+    metrics recorded in Hatchet worker steps have tenant attribution.
+    """
+    set_tenant_context(
+        org_id=str(metadata.get("org_id", "")),
+        tenant_id=str(metadata.get("tenant_id", "")),
+        user_id=str(metadata.get("owner", "")),
+    )
+
+
 # ── Log Filter (injects org/tenant into every log record) ──
 
 class TenantLogFilter(logging.Filter):

@@ -19,6 +19,8 @@ from core.utils.otel_setup import (
     _tenant_id_var,
     _user_id_var,
     get_tenant_context,
+    set_tenant_context,
+    set_tenant_context_from_metadata,
     get_tracer,
     get_meter,
     NoOpTracer,
@@ -305,3 +307,91 @@ class TestMiddlewareIntegration:
         response = client.get("/test")
         data = response.json()
         assert data == {"org_id": "", "tenant_id": "", "user_id": ""}
+
+
+class TestSetTenantContext:
+    """Tests for set_tenant_context helper (Hatchet worker support)."""
+
+    def test_sets_all_fields(self):
+        """All three ContextVars are set."""
+        set_tenant_context(org_id="org-1", tenant_id="t-2", user_id="u-3")
+        try:
+            ctx = get_tenant_context()
+            assert ctx == {
+                "org_id": "org-1",
+                "tenant_id": "t-2",
+                "user_id": "u-3",
+            }
+        finally:
+            # Reset to defaults
+            set_tenant_context()
+
+    def test_defaults_to_empty_strings(self):
+        """Calling with no args sets empty strings."""
+        set_tenant_context(org_id="org-1", tenant_id="t-2", user_id="u-3")
+        set_tenant_context()
+        ctx = get_tenant_context()
+        assert ctx == {"org_id": "", "tenant_id": "", "user_id": ""}
+
+    def test_partial_set(self):
+        """Only specified fields are changed, others default to empty."""
+        set_tenant_context(org_id="org-only")
+        try:
+            ctx = get_tenant_context()
+            assert ctx["org_id"] == "org-only"
+            assert ctx["tenant_id"] == ""
+            assert ctx["user_id"] == ""
+        finally:
+            set_tenant_context()
+
+
+class TestSetTenantContextFromMetadata:
+    """Tests for set_tenant_context_from_metadata (document metadata)."""
+
+    def test_extracts_all_fields(self):
+        """org_id, tenant_id, and owner are extracted from metadata."""
+        metadata = {
+            "org_id": "acme-corp",
+            "tenant_id": "tenant-42",
+            "owner": "user-99",
+        }
+        set_tenant_context_from_metadata(metadata)
+        try:
+            ctx = get_tenant_context()
+            assert ctx == {
+                "org_id": "acme-corp",
+                "tenant_id": "tenant-42",
+                "user_id": "user-99",
+            }
+        finally:
+            set_tenant_context()
+
+    def test_empty_metadata(self):
+        """Empty dict results in empty context strings."""
+        set_tenant_context_from_metadata({})
+        ctx = get_tenant_context()
+        assert ctx == {"org_id": "", "tenant_id": "", "user_id": ""}
+
+    def test_missing_keys_default_to_empty(self):
+        """Keys not present in metadata default to empty string."""
+        set_tenant_context_from_metadata({"org_id": "org-x"})
+        try:
+            ctx = get_tenant_context()
+            assert ctx["org_id"] == "org-x"
+            assert ctx["tenant_id"] == ""
+            assert ctx["user_id"] == ""
+        finally:
+            set_tenant_context()
+
+    def test_non_string_values_are_coerced(self):
+        """Non-string values (e.g. UUID) are coerced to string."""
+        import uuid
+        uid = uuid.UUID("12345678-1234-5678-1234-567812345678")
+        metadata = {"org_id": uid, "tenant_id": 123}
+        set_tenant_context_from_metadata(metadata)
+        try:
+            ctx = get_tenant_context()
+            assert ctx["org_id"] == str(uid)
+            assert ctx["tenant_id"] == "123"
+        finally:
+            set_tenant_context()

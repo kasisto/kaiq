@@ -25,6 +25,7 @@ from core.base.abstractions import (
     GraphExtractionStatus,
 )
 from core.utils import convert_nonserializable_objects
+from core.utils.otel_setup import set_tenant_context
 
 from ...services import GraphService
 
@@ -149,6 +150,12 @@ def hatchet_graph_search_results_factory(
     async def extraction(
         input: GraphExtractionInput, ctx: Context,
     ) -> dict:
+        # TODO(otel): Graph workflow input does not carry document
+        # metadata (org_id/tenant_id). To propagate tenant context
+        # here, either the caller must pass metadata through the
+        # workflow input, or we must look up the document to extract
+        # owner/org info. For now, tenant context will be empty in
+        # graph workflow spans/metrics.
         request = input.model_dump()
         input_data = get_input_data_dict(request, fast_llm)
         document_id = input_data.get("document_id")
@@ -240,6 +247,7 @@ def hatchet_graph_search_results_factory(
     async def entity_description(
         input: GraphExtractionInput, ctx: Context,
     ) -> dict:
+        # TODO(otel): Same gap as extraction — no tenant context.
         # After a collection fan-out, the parent's entity_description
         # fires with the original (collection-level) input where
         # document_id is None.  Each child handles its own entity
@@ -332,6 +340,7 @@ def hatchet_graph_search_results_factory(
     async def clustering(
         input: GraphClusteringInput, ctx: Context,
     ) -> dict:
+        # TODO(otel): No tenant context — see extraction step comment.
         logger.info("Running Graph Clustering")
         input_data = get_input_data_dict(
             input.model_dump(), fast_llm,
@@ -531,6 +540,7 @@ def hatchet_graph_search_results_factory(
     async def summarize_communities(
         input: GraphCommunitySummarizationInput, ctx: Context,
     ) -> dict:
+        # TODO(otel): No tenant context — see extraction step comment.
         start_time = time.time()
         input_data = get_input_data_dict(
             input.model_dump(), fast_llm,
@@ -585,6 +595,7 @@ def hatchet_graph_search_results_factory(
     async def deduplicate(
         input: GraphDeduplicationInput, ctx: Context,
     ) -> dict:
+        # TODO(otel): No tenant context — see extraction step comment.
         start_time = time.time()
         input_data = get_input_data_dict(
             input.model_dump(), fast_llm,

@@ -72,6 +72,11 @@ _search_duration = _meter.create_histogram(
     unit="s",
     description="Search request duration",
 )
+_search_results_count = _meter.create_histogram(
+    "r2r.search.results_count",
+    unit="{result}",
+    description="Number of chunk search results returned per query",
+)
 
 
 class AgentFactory:
@@ -288,6 +293,7 @@ class RetrievalService(Service):
         _search_start = time.monotonic()
         strategy = search_settings.search_strategy.lower()
         _status = "error"
+        result = None
 
         try:
             if strategy == "hyde":
@@ -317,6 +323,10 @@ class RetrievalService(Service):
                 _search_duration.record(
                     time.monotonic() - _search_start, _attrs
                 )
+                if result is not None:
+                    _search_results_count.record(
+                        len(result.chunk_search_results), _attrs
+                    )
             except Exception:
                 logger.debug(
                     "Failed to record search metrics",

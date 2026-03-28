@@ -34,6 +34,11 @@ _embedding_duration = _meter.create_histogram(
     unit="s",
     description="Embedding request duration",
 )
+_embedding_batch_size = _meter.create_histogram(
+    "r2r.embedding.batch_size",
+    unit="{text}",
+    description="Number of texts per embedding batch request",
+)
 
 
 class EmbeddingConfig(ProviderConfig):
@@ -193,6 +198,23 @@ class EmbeddingProvider(Provider):
             word_count=sum(len(t.split()) for t in texts),
             model=getattr(self.config, "base_model", "unknown"),
         )
+        try:
+            ctx = get_tenant_context()
+            _embedding_batch_size.record(
+                len(texts),
+                {
+                    "org_id": ctx.get("org_id", ""),
+                    "tenant_id": ctx.get("tenant_id", ""),
+                    "gen_ai.request.model": getattr(
+                        self.config, "base_model", "unknown"
+                    ),
+                },
+            )
+        except Exception:
+            logger.debug(
+                "Failed to record embedding batch size metric",
+                exc_info=True,
+            )
         return result
 
     def get_embeddings(
@@ -211,6 +233,23 @@ class EmbeddingProvider(Provider):
             word_count=sum(len(t.split()) for t in texts),
             model=getattr(self.config, "base_model", "unknown"),
         )
+        try:
+            ctx = get_tenant_context()
+            _embedding_batch_size.record(
+                len(texts),
+                {
+                    "org_id": ctx.get("org_id", ""),
+                    "tenant_id": ctx.get("tenant_id", ""),
+                    "gen_ai.request.model": getattr(
+                        self.config, "base_model", "unknown"
+                    ),
+                },
+            )
+        except Exception:
+            logger.debug(
+                "Failed to record embedding batch size metric",
+                exc_info=True,
+            )
         return result
 
     @abstractmethod

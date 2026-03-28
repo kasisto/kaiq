@@ -29,6 +29,7 @@ from core.utils import (
     num_tokens,
     update_settings_from_dict,
 )
+from core.utils.otel_setup import set_tenant_context_from_metadata
 
 from ...services import IngestionService, IngestionServiceAdapter
 
@@ -175,6 +176,9 @@ def hatchet_ingestion_factory(
         try:
             logger.info("Initiating ingestion workflow, step: parse")
             input_data = input.model_dump()
+            set_tenant_context_from_metadata(
+                input_data.get("metadata", {})
+            )
             parsed_data = (
                 IngestionServiceAdapter.parse_ingest_file_input(input_data)
             )
@@ -322,6 +326,9 @@ def hatchet_ingestion_factory(
     @ingest_chunks_wf.task(execution_timeout=timedelta(minutes=60))
     async def ingest(input: IngestChunksInput, ctx: Context) -> dict:
         input_data = input.model_dump()
+        set_tenant_context_from_metadata(
+            input_data.get("metadata", {})
+        )
         parsed_data = (
             IngestionServiceAdapter.parse_ingest_chunks_input(input_data)
         )
@@ -371,6 +378,9 @@ def hatchet_ingestion_factory(
         parents=[ingest], execution_timeout=timedelta(minutes=60),
     )
     async def embed(input: IngestChunksInput, ctx: Context) -> dict:
+        set_tenant_context_from_metadata(
+            input.metadata if isinstance(input.metadata, dict) else {}
+        )
         doc_dict = ctx.task_output(ingest)["document_info"]
         document_info = DocumentResponse(**doc_dict)
         extractions = ctx.task_output(ingest)["extractions"]
@@ -396,6 +406,9 @@ def hatchet_ingestion_factory(
         parents=[embed], execution_timeout=timedelta(minutes=60),
     )
     async def finalize(input: IngestChunksInput, ctx: Context) -> dict:
+        set_tenant_context_from_metadata(
+            input.metadata if isinstance(input.metadata, dict) else {}
+        )
         doc_dict = ctx.task_output(embed)["document_info"]
         document_info = DocumentResponse(**doc_dict)
 
@@ -474,6 +487,9 @@ def hatchet_ingestion_factory(
     ) -> dict:
         try:
             input_data = input.model_dump()
+            set_tenant_context_from_metadata(
+                input_data.get("metadata") or {}
+            )
             parsed_data = (
                 IngestionServiceAdapter.parse_update_chunk_input(
                     input_data

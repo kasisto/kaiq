@@ -58,6 +58,11 @@ _ingestion_duration = _meter.create_histogram(
     unit="s",
     description="End-to-end ingestion pipeline duration",
 )
+_document_size_bytes = _meter.create_histogram(
+    "r2r.ingestion.document_size_bytes",
+    unit="By",
+    description="Size of ingested documents in bytes",
+)
 
 
 class IngestionService:
@@ -562,11 +567,10 @@ class IngestionService:
         )
 
         # Record document success metric + approximate pipeline duration.
-        # NOTE: When ingestion runs via Hatchet (async workflow engine),
-        # tenant context (org_id/tenant_id) may be empty because Hatchet
-        # workers execute outside the original HTTP request scope and
-        # ContextVars are not propagated. This is a known limitation —
-        # fixing Hatchet context propagation is tracked separately.
+        # NOTE: Hatchet ingestion workflow steps now call
+        # set_tenant_context_from_metadata() at step entry, so tenant
+        # context should be available here for ingestion workflows.
+        # Graph workflows still lack tenant context (tracked separately).
         try:
             ctx = get_tenant_context()
             doc_type = (
@@ -597,6 +601,11 @@ class IngestionService:
                 ).total_seconds()
                 if _elapsed > 0:
                     _ingestion_duration.record(_elapsed, _attrs)
+            # Record document size for capacity planning
+            if document_info.size_in_bytes:
+                _document_size_bytes.record(
+                    document_info.size_in_bytes, _attrs
+                )
         except Exception:
             logger.debug(
                 "Failed to record ingestion document metric",
