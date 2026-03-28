@@ -24,6 +24,7 @@ from core.utils.otel_setup import (
     NoOpTracer,
     NoOpMeter,
     NoOpSpan,
+    setup_opentelemetry,
 )
 
 
@@ -153,3 +154,153 @@ class TestNoOps:
         with patch("core.utils.otel_setup.OTEL_AVAILABLE", False):
             meter = get_meter("test")
             assert isinstance(meter, NoOpMeter)
+
+
+class TestSetupOpentelemetry:
+    """Tests for setup_opentelemetry function."""
+
+    def test_installs_log_filter_always(self):
+        """Log filter is installed even when OTel is not available."""
+        from fastapi import FastAPI
+        app = FastAPI()
+        root_logger = logging.getLogger()
+        initial_filters = len(root_logger.filters)
+
+        with patch("core.utils.otel_setup.OTEL_AVAILABLE", False):
+            setup_opentelemetry(app, "test-service")
+
+        assert len(root_logger.filters) > initial_filters
+        # Clean up
+        root_logger.filters = [f for f in root_logger.filters if not isinstance(f, TenantLogFilter)]
+
+    def test_skips_otel_when_disabled(self):
+        """No OTel setup when OTEL_ENABLED=false."""
+        from fastapi import FastAPI
+        app = FastAPI()
+        initial_middleware = len(app.user_middleware)
+
+        with patch.dict("os.environ", {"OTEL_ENABLED": "false"}):
+            setup_opentelemetry(app, "test-service")
+
+        # No middleware added (only log filter)
+        assert len(app.user_middleware) == initial_middleware
+        # Clean up log filter
+        logging.getLogger().filters = [f for f in logging.getLogger().filters if not isinstance(f, TenantLogFilter)]
+
+    def test_raises_on_invalid_otel_enabled(self):
+        """Raises ValueError for invalid OTEL_ENABLED value."""
+        from fastapi import FastAPI
+        app = FastAPI()
+
+        with (
+            patch.dict("os.environ", {"OTEL_ENABLED": "maybe"}),
+            patch("core.utils.otel_setup.OTEL_AVAILABLE", True),
+        ):
+            with pytest.raises(ValueError, match="Invalid OTEL_ENABLED"):
+                setup_opentelemetry(app, "test-service")
+
+        # Clean up
+        logging.getLogger().filters = [f for f in logging.getLogger().filters if not isinstance(f, TenantLogFilter)]
+
+    def test_registers_span_processor_when_enabled(self):
+        """SpanProcessor registered when OTel is enabled."""
+        from fastapi import FastAPI
+        app = FastAPI()
+
+        mock_provider = MagicMock()
+        mock_provider.add_span_processor = MagicMock()
+
+        with (
+            patch.dict("os.environ", {"OTEL_ENABLED": "true"}),
+            patch("core.utils.otel_setup.OTEL_AVAILABLE", True),
+            patch("core.utils.otel_setup.trace") as mock_trace,
+        ):
+            mock_trace.get_tracer_provider.return_value = mock_provider
+            mock_trace.get_current_span.return_value = MagicMock(is_recording=lambda: False)
+            setup_opentelemetry(app, "test-service")
+
+        mock_provider.add_span_processor.assert_called_once()
+        arg = mock_provider.add_span_processor.call_args[0][0]
+        assert isinstance(arg, TenantSpanProcessor)
+
+        # Clean up
+        logging.getLogger().filters = [f for f in logging.getLogger().filters if not isinstance(f, TenantLogFilter)]
+
+
+class TestMiddlewareIntegration:
+    """Tests for the tenant context middleware via TestClient."""
+
+    @pytest.fixture
+    def app_with_otel(self):
+        """Create a FastAPI app with OTel setup and a test endpoint."""
+        from fastapi import FastAPI
+        app = FastAPI()
+
+        # Manually install just the log filter and ContextVar middleware
+        # (skip actual OTel span processor since no real TracerProvider)
+        root_logger = logging.getLogger()
+        root_logger.addFilter(TenantLogFilter())
+
+        @app.middleware("http")
+        async def tenant_middleware(request, call_next):
+            from core.utils.otel_setup import _org_id_var, _tenant_id_var, _user_id_var
+            org_token = _org_id_var.set(request.headers.get("X-Organization-Id", ""))
+            tenant_token = _tenant_id_var.set(request.headers.get("X-Tenant-Id", ""))
+            user_token = _user_id_var.set(request.headers.get("X-User-Id", ""))
+            try:
+                response = await call_next(request)
+                return response
+            finally:
+                _org_id_var.reset(org_token)
+                _tenant_id_var.reset(tenant_token)
+                _user_id_var.reset(user_token)
+
+        @app.get("/test")
+        async def test_endpoint():
+            ctx = get_tenant_context()
+            return ctx
+
+        yield app
+        # Clean up
+        root_logger.filters = [f for f in root_logger.filters if not isinstance(f, TenantLogFilter)]
+
+    def test_middleware_sets_context_from_headers(self, app_with_otel):
+        """Kong headers are extracted into ContextVars and returned."""
+        from fastapi.testclient import TestClient
+        client = TestClient(app_with_otel)
+
+        response = client.get("/test", headers={
+            "X-Organization-Id": "acme",
+            "X-Tenant-Id": "tenant-1",
+            "X-User-Id": "user-42",
+        })
+
+        assert response.status_code == 200
+        data = response.json()
+        assert data["org_id"] == "acme"
+        assert data["tenant_id"] == "tenant-1"
+        assert data["user_id"] == "user-42"
+
+    def test_middleware_resets_context_between_requests(self, app_with_otel):
+        """ContextVars are reset after each request — no leaking."""
+        from fastapi.testclient import TestClient
+        client = TestClient(app_with_otel)
+
+        # First request with headers
+        client.get("/test", headers={"X-Organization-Id": "acme"})
+
+        # Second request WITHOUT headers
+        response = client.get("/test")
+        data = response.json()
+        assert data["org_id"] == ""
+        assert data["tenant_id"] == ""
+        assert data["user_id"] == ""
+
+    def test_middleware_defaults_to_empty_without_headers(self, app_with_otel):
+        """No Kong headers = empty context."""
+        from fastapi.testclient import TestClient
+        client = TestClient(app_with_otel)
+
+        response = client.get("/test")
+        data = response.json()
+        assert data == {"org_id": "", "tenant_id": "", "user_id": ""}
