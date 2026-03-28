@@ -54,7 +54,24 @@ from ..abstractions import R2RProviders
 from ..config import R2RConfig
 from .base import Service
 
+import time
+
+from core.utils.otel_setup import get_meter, get_tenant_context
+
 logger = logging.getLogger()
+
+# ── OTel Metrics (lazy, module-level singletons) ──
+_meter = get_meter("r2r.retrieval")
+_search_counter = _meter.create_counter(
+    "r2r.search.requests_total",
+    unit="{request}",
+    description="Total search requests",
+)
+_search_duration = _meter.create_histogram(
+    "r2r.search.duration_seconds",
+    unit="s",
+    description="Search request duration",
+)
 
 
 class AgentFactory:
@@ -268,15 +285,43 @@ class RetrievalService(Service):
         to basic, hyde, or rag_fusion method. Each returns
         an AggregateSearchResult that includes chunk + graph results.
         """
+        _search_start = time.monotonic()
         strategy = search_settings.search_strategy.lower()
+        _status = "error"
 
-        if strategy == "hyde":
-            return await self._hyde_search(query, search_settings)
-        elif strategy == "rag_fusion":
-            return await self._rag_fusion_search(query, search_settings)
-        else:
-            # 'vanilla', 'basic', or anything else...
-            return await self._basic_search(query, search_settings)
+        try:
+            if strategy == "hyde":
+                result = await self._hyde_search(query, search_settings)
+            elif strategy == "rag_fusion":
+                result = await self._rag_fusion_search(
+                    query, search_settings
+                )
+            else:
+                # 'vanilla', 'basic', or anything else...
+                result = await self._basic_search(query, search_settings)
+            _status = "success"
+            return result
+        except Exception:
+            _status = "error"
+            raise
+        finally:
+            try:
+                ctx = get_tenant_context()
+                _attrs = {
+                    "org_id": ctx.get("org_id", ""),
+                    "tenant_id": ctx.get("tenant_id", ""),
+                    "strategy": strategy,
+                    "status": _status,
+                }
+                _search_counter.add(1, _attrs)
+                _search_duration.record(
+                    time.monotonic() - _search_start, _attrs
+                )
+            except Exception:
+                logger.debug(
+                    "Failed to record search metrics",
+                    exc_info=True,
+                )
 
     async def _basic_search(
         self, query: str, search_settings: SearchSettings

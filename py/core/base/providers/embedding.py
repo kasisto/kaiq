@@ -15,7 +15,25 @@ from ..abstractions import (
 )
 from .base import Provider, ProviderConfig
 
+from core.utils.otel_setup import get_meter, get_tenant_context
+
 logger = logging.getLogger()
+
+# ── OTel Metrics (lazy, module-level singletons) ──
+_meter = get_meter("r2r.embedding")
+# Word count approximation: we use len(text.split()) because we don't have
+# access to the model's tokenizer. This under-counts vs real BPE tokens but
+# is directionally useful for cost attribution.
+_embedding_words = _meter.create_counter(
+    "r2r.embedding.words_total",
+    unit="{word}",
+    description="Approximate word count sent to embedding model (not true tokens)",
+)
+_embedding_duration = _meter.create_histogram(
+    "r2r.embedding.duration_seconds",
+    unit="s",
+    description="Embedding request duration",
+)
 
 
 class EmbeddingConfig(ProviderConfig):
@@ -40,6 +58,25 @@ class EmbeddingConfig(ProviderConfig):
     @property
     def supported_providers(self) -> list[str]:
         return ["litellm", "openai", "ollama"]
+
+
+def _record_embedding_metrics(
+    elapsed: float,
+    word_count: int,
+    model: str,
+) -> None:
+    """Record duration and word-count metrics for an embedding call."""
+    try:
+        ctx = get_tenant_context()
+        attrs = {
+            "org_id": ctx.get("org_id", ""),
+            "tenant_id": ctx.get("tenant_id", ""),
+            "gen_ai.request.model": model,
+        }
+        _embedding_duration.record(elapsed, attrs)
+        _embedding_words.add(word_count, attrs)
+    except Exception:
+        logger.debug("Failed to record embedding metrics", exc_info=True)
 
 
 class EmbeddingProvider(Provider):
@@ -109,44 +146,72 @@ class EmbeddingProvider(Provider):
         text: str,
         stage: Step = Step.BASE,
     ):
+        _start = time.monotonic()
         task = {
             "text": text,
             "stage": stage,
         }
-        return await self._execute_with_backoff_async(task)
+        result = await self._execute_with_backoff_async(task)
+        _record_embedding_metrics(
+            elapsed=time.monotonic() - _start,
+            word_count=len(text.split()),
+            model=getattr(self.config, "base_model", "unknown"),
+        )
+        return result
 
     def get_embedding(
         self,
         text: str,
         stage: Step = Step.BASE,
     ):
+        _start = time.monotonic()
         task = {
             "text": text,
             "stage": stage,
         }
-        return self._execute_with_backoff_sync(task)
+        result = self._execute_with_backoff_sync(task)
+        _record_embedding_metrics(
+            elapsed=time.monotonic() - _start,
+            word_count=len(text.split()),
+            model=getattr(self.config, "base_model", "unknown"),
+        )
+        return result
 
     async def async_get_embeddings(
         self,
         texts: list[str],
         stage: Step = Step.BASE,
     ):
+        _start = time.monotonic()
         task = {
             "texts": texts,
             "stage": stage,
         }
-        return await self._execute_with_backoff_async(task)
+        result = await self._execute_with_backoff_async(task)
+        _record_embedding_metrics(
+            elapsed=time.monotonic() - _start,
+            word_count=sum(len(t.split()) for t in texts),
+            model=getattr(self.config, "base_model", "unknown"),
+        )
+        return result
 
     def get_embeddings(
         self,
         texts: list[str],
         stage: Step = Step.BASE,
     ) -> list[list[float]]:
+        _start = time.monotonic()
         task = {
             "texts": texts,
             "stage": stage,
         }
-        return self._execute_with_backoff_sync(task)
+        result = self._execute_with_backoff_sync(task)
+        _record_embedding_metrics(
+            elapsed=time.monotonic() - _start,
+            word_count=sum(len(t.split()) for t in texts),
+            model=getattr(self.config, "base_model", "unknown"),
+        )
+        return result
 
     @abstractmethod
     def rerank(

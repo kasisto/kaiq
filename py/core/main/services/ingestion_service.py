@@ -2,7 +2,7 @@
 import asyncio
 import json
 import logging
-from datetime import datetime
+from datetime import datetime, timezone
 from typing import Any, AsyncGenerator, Optional, Sequence
 from uuid import UUID
 
@@ -36,8 +36,28 @@ from shared.abstractions import PDFParsingError, PopplerNotFoundError
 from ..abstractions import R2RProviders
 from ..config import R2RConfig
 
+from core.utils.otel_setup import get_meter, get_tenant_context
+
 logger = logging.getLogger()
 STARTING_VERSION = "v0"
+
+# ── OTel Metrics (lazy, module-level singletons) ──
+_meter = get_meter("r2r.ingestion")
+_documents_counter = _meter.create_counter(
+    "r2r.ingestion.documents_total",
+    unit="{document}",
+    description="Total documents ingested",
+)
+_chunks_counter = _meter.create_counter(
+    "r2r.ingestion.chunks_total",
+    unit="{chunk}",
+    description="Total chunks stored",
+)
+_ingestion_duration = _meter.create_histogram(
+    "r2r.ingestion.duration_seconds",
+    unit="s",
+    description="End-to-end ingestion pipeline duration",
+)
 
 
 class IngestionService:
@@ -508,10 +528,24 @@ class IngestionService:
                 logger.error(f"Failed to store final vector batch: {e}")
                 yield f"Error: {e}"
 
-        # Summaries
+        # Summaries + OTel chunk metrics
         for doc_id, cnt in document_counts.items():
             info_msg = f"Successful ingestion for document_id: {doc_id}, with vector count: {cnt}"
             logger.info(info_msg)
+            try:
+                ctx = get_tenant_context()
+                _chunks_counter.add(
+                    cnt,
+                    {
+                        "org_id": ctx.get("org_id", ""),
+                        "tenant_id": ctx.get("tenant_id", ""),
+                    },
+                )
+            except Exception:
+                logger.debug(
+                    "Failed to record chunk metrics",
+                    exc_info=True,
+                )
             yield info_msg
 
     async def finalize_ingestion(
@@ -526,6 +560,49 @@ class IngestionService:
         await self.update_document_status(
             document_info, IngestionStatus.SUCCESS
         )
+
+        # Record document success metric + approximate pipeline duration.
+        # NOTE: When ingestion runs via Hatchet (async workflow engine),
+        # tenant context (org_id/tenant_id) may be empty because Hatchet
+        # workers execute outside the original HTTP request scope and
+        # ContextVars are not propagated. This is a known limitation —
+        # fixing Hatchet context propagation is tracked separately.
+        try:
+            ctx = get_tenant_context()
+            doc_type = (
+                document_info.document_type.value
+                if document_info.document_type
+                else "unknown"
+            )
+            # document_type cardinality is bounded (~30 values from the
+            # DocumentType enum: PDF, DOCX, TXT, HTML, etc.), so it is
+            # safe to use as a metric attribute without causing high-
+            # cardinality issues in the TSDB.
+            _attrs = {
+                "org_id": ctx.get("org_id", ""),
+                "tenant_id": ctx.get("tenant_id", ""),
+                "document_type": doc_type,
+            }
+            _documents_counter.add(
+                1, {**_attrs, "status": "success"}
+            )
+            # Approximate duration from document creation to finalization
+            if document_info.created_at:
+                created_at = document_info.created_at
+                # Guard: if created_at is naive (no tzinfo), assume UTC
+                if created_at.tzinfo is None:
+                    created_at = created_at.replace(tzinfo=timezone.utc)
+                _elapsed = (
+                    datetime.now(timezone.utc) - created_at
+                ).total_seconds()
+                if _elapsed > 0:
+                    _ingestion_duration.record(_elapsed, _attrs)
+        except Exception:
+            logger.debug(
+                "Failed to record ingestion document metric",
+                exc_info=True,
+            )
+
         return empty_generator()
 
     async def update_document_status(
@@ -538,6 +615,30 @@ class IngestionService:
         if metadata:
             document_info.metadata = {**document_info.metadata, **metadata}
         await self._update_document_status_in_db(document_info)
+
+        # Record failure metric (success is recorded in finalize_ingestion)
+        if status == IngestionStatus.FAILED:
+            try:
+                ctx = get_tenant_context()
+                doc_type = (
+                    document_info.document_type.value
+                    if document_info.document_type
+                    else "unknown"
+                )
+                _documents_counter.add(
+                    1,
+                    {
+                        "org_id": ctx.get("org_id", ""),
+                        "tenant_id": ctx.get("tenant_id", ""),
+                        "status": "failure",
+                        "document_type": doc_type,
+                    },
+                )
+            except Exception:
+                logger.debug(
+                    "Failed to record ingestion failure metric",
+                    exc_info=True,
+                )
 
     async def _update_document_status_in_db(
         self, document_info: DocumentResponse
