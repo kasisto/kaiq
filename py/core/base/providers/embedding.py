@@ -21,10 +21,13 @@ logger = logging.getLogger()
 
 # ── OTel Metrics (lazy, module-level singletons) ──
 _meter = get_meter("r2r.embedding")
-_embedding_tokens = _meter.create_counter(
-    "r2r.embedding.tokens_total",
-    unit="{token}",
-    description="Total embedding tokens consumed",
+# Word count approximation: we use len(text.split()) because we don't have
+# access to the model's tokenizer. This under-counts vs real BPE tokens but
+# is directionally useful for cost attribution.
+_embedding_words = _meter.create_counter(
+    "r2r.embedding.words_total",
+    unit="{word}",
+    description="Approximate word count sent to embedding model (not true tokens)",
 )
 _embedding_duration = _meter.create_histogram(
     "r2r.embedding.duration_seconds",
@@ -138,10 +141,10 @@ class EmbeddingProvider(Provider):
             _base_attrs = {
                 "org_id": ctx.get("org_id", ""),
                 "tenant_id": ctx.get("tenant_id", ""),
-                "model": getattr(self.config, "base_model", "unknown"),
+                "gen_ai.request.model": getattr(self.config, "base_model", "unknown"),
             }
             _embedding_duration.record(_elapsed, _base_attrs)
-            _embedding_tokens.add(
+            _embedding_words.add(
                 len(text.split()),
                 _base_attrs,
             )
@@ -157,11 +160,33 @@ class EmbeddingProvider(Provider):
         text: str,
         stage: Step = Step.BASE,
     ):
+        _start = time.monotonic()
         task = {
             "text": text,
             "stage": stage,
         }
-        return self._execute_with_backoff_sync(task)
+        result = self._execute_with_backoff_sync(task)
+
+        # Record embedding metrics
+        try:
+            _elapsed = time.monotonic() - _start
+            ctx = get_tenant_context()
+            _base_attrs = {
+                "org_id": ctx.get("org_id", ""),
+                "tenant_id": ctx.get("tenant_id", ""),
+                "gen_ai.request.model": getattr(self.config, "base_model", "unknown"),
+            }
+            _embedding_duration.record(_elapsed, _base_attrs)
+            _embedding_words.add(
+                len(text.split()),
+                _base_attrs,
+            )
+        except Exception:
+            logger.debug(
+                "Failed to record embedding metrics", exc_info=True
+            )
+
+        return result
 
     async def async_get_embeddings(
         self,
@@ -182,11 +207,11 @@ class EmbeddingProvider(Provider):
             _base_attrs = {
                 "org_id": ctx.get("org_id", ""),
                 "tenant_id": ctx.get("tenant_id", ""),
-                "model": getattr(self.config, "base_model", "unknown"),
+                "gen_ai.request.model": getattr(self.config, "base_model", "unknown"),
             }
             _embedding_duration.record(_elapsed, _base_attrs)
             _total_words = sum(len(t.split()) for t in texts)
-            _embedding_tokens.add(_total_words, _base_attrs)
+            _embedding_words.add(_total_words, _base_attrs)
         except Exception:
             logger.debug(
                 "Failed to record embedding batch metrics",
@@ -200,11 +225,32 @@ class EmbeddingProvider(Provider):
         texts: list[str],
         stage: Step = Step.BASE,
     ) -> list[list[float]]:
+        _start = time.monotonic()
         task = {
             "texts": texts,
             "stage": stage,
         }
-        return self._execute_with_backoff_sync(task)
+        result = self._execute_with_backoff_sync(task)
+
+        # Record embedding metrics for batch
+        try:
+            _elapsed = time.monotonic() - _start
+            ctx = get_tenant_context()
+            _base_attrs = {
+                "org_id": ctx.get("org_id", ""),
+                "tenant_id": ctx.get("tenant_id", ""),
+                "gen_ai.request.model": getattr(self.config, "base_model", "unknown"),
+            }
+            _embedding_duration.record(_elapsed, _base_attrs)
+            _total_words = sum(len(t.split()) for t in texts)
+            _embedding_words.add(_total_words, _base_attrs)
+        except Exception:
+            logger.debug(
+                "Failed to record embedding batch metrics",
+                exc_info=True,
+            )
+
+        return result
 
     @abstractmethod
     def rerank(

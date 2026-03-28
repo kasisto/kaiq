@@ -86,7 +86,10 @@ log_config = {
     "filters": {
         "http_status_filter": {
             "()": HTTPStatusFilter,
-        }
+        },
+        "tenant_log_filter": {
+            "()": "core.utils.otel_setup.TenantLogFilter",
+        },
     },
     "formatters": {
         "default": {
@@ -141,7 +144,7 @@ log_config = {
             "class": "logging.StreamHandler",
             "formatter": log_console_formatter,
             "stream": sys.stdout,
-            "filters": ["http_status_filter"],
+            "filters": ["http_status_filter", "tenant_log_filter"],
             "level": log_level,  # Set handler level based on the environment variable
         },
     },

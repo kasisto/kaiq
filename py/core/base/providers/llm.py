@@ -207,7 +207,7 @@ class CompletionProvider(Provider):
             _base_attrs = {
                 "org_id": ctx.get("org_id", ""),
                 "tenant_id": ctx.get("tenant_id", ""),
-                "model": _model,
+                "gen_ai.request.model": _model,
             }
             _llm_duration.record(_elapsed, _base_attrs)
             if completion.usage:
@@ -234,6 +234,9 @@ class CompletionProvider(Provider):
         generation_config: GenerationConfig,
         **kwargs,
     ) -> AsyncGenerator[LLMChatCompletionChunk, None]:
+        # TODO: Record streaming LLM metrics (duration + token usage).
+        # Requires accumulating chunk.usage across the full stream and
+        # emitting a single metric after the last chunk.
         generation_config.stream = True
         task = {
             "messages": messages,

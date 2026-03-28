@@ -149,7 +149,12 @@ class NoOpMeter:
         return NoOpCounter()
 
     def create_observable_gauge(self, name: str, **kwargs):
-        pass
+        return NoOpGauge()
+
+
+class NoOpGauge:
+    """A no-op observable gauge that does nothing."""
+    pass
 
 
 class NoOpCounter:
@@ -190,8 +195,9 @@ def setup_opentelemetry(
     """
     # Always install the log filter (works even without OTel)
     root_logger = logging.getLogger()
-    root_logger.addFilter(TenantLogFilter())
-    logger.info("Tenant log filter installed for %s", service_name)
+    if not any(isinstance(f, TenantLogFilter) for f in root_logger.filters):
+        root_logger.addFilter(TenantLogFilter())
+        logger.info("Tenant log filter installed for %s", service_name)
 
     # Skip OTel-specific setup if not installed
     if not OTEL_AVAILABLE:
@@ -235,7 +241,11 @@ def setup_opentelemetry(
         user_token = _user_id_var.set(user_id)
 
         try:
-            # Also set on the root span for direct span queries
+            # Explicitly set attributes on the root span because the
+            # TenantSpanProcessor fires on_start *before* the middleware has
+            # populated the ContextVars.  Without this, the root HTTP span
+            # would be missing tenant attributes even though all child spans
+            # (created later) pick them up via the SpanProcessor.
             span = trace.get_current_span()
             if span.is_recording():
                 if org_id:

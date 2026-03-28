@@ -54,6 +54,8 @@ from ..abstractions import R2RProviders
 from ..config import R2RConfig
 from .base import Service
 
+import time as _time
+
 from core.utils.otel_setup import get_meter, get_tenant_context
 
 logger = logging.getLogger()
@@ -283,9 +285,9 @@ class RetrievalService(Service):
         to basic, hyde, or rag_fusion method. Each returns
         an AggregateSearchResult that includes chunk + graph results.
         """
-        import time as _time
         _search_start = _time.monotonic()
         strategy = search_settings.search_strategy.lower()
+        _status = "error"
 
         try:
             if strategy == "hyde":

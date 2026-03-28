@@ -2,7 +2,7 @@
 import asyncio
 import json
 import logging
-from datetime import datetime
+from datetime import datetime, timezone
 from typing import Any, AsyncGenerator, Optional, Sequence
 from uuid import UUID
 
@@ -580,7 +580,7 @@ class IngestionService:
             # Approximate duration from document creation to finalization
             if document_info.created_at:
                 _elapsed = (
-                    datetime.now() - document_info.created_at
+                    datetime.now(timezone.utc) - document_info.created_at
                 ).total_seconds()
                 if _elapsed > 0:
                     _ingestion_duration.record(_elapsed, _attrs)
