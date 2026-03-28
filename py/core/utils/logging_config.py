@@ -109,11 +109,21 @@ log_config = {
         },
         "json": {
             "()": "pythonjsonlogger.json.JsonFormatter",
-            "format": log_format or "%(name)s %(levelname)s %(message)s",
+            "format": log_format
+            or "%(asctime)s %(name)s %(levelname)s %(message)s "
+            "%(org_id)s %(tenant_id)s %(user_id)s "
+            "%(otelTraceID)s %(otelSpanID)s",
             "rename_fields": {
                 "asctime": "time",
                 "levelname": "level",
                 "name": "logger",
+            },
+            "defaults": {
+                "org_id": "",
+                "tenant_id": "",
+                "user_id": "",
+                "otelTraceID": "",
+                "otelSpanID": "",
             },
         },
     },

@@ -15,7 +15,22 @@ from ..abstractions import (
 )
 from .base import Provider, ProviderConfig
 
+from core.utils.otel_setup import get_meter, get_tenant_context
+
 logger = logging.getLogger()
+
+# ── OTel Metrics (lazy, module-level singletons) ──
+_meter = get_meter("r2r.embedding")
+_embedding_tokens = _meter.create_counter(
+    "r2r.embedding.tokens_total",
+    unit="{token}",
+    description="Total embedding tokens consumed",
+)
+_embedding_duration = _meter.create_histogram(
+    "r2r.embedding.duration_seconds",
+    unit="s",
+    description="Embedding request duration",
+)
 
 
 class EmbeddingConfig(ProviderConfig):
@@ -109,11 +124,33 @@ class EmbeddingProvider(Provider):
         text: str,
         stage: Step = Step.BASE,
     ):
+        _start = time.monotonic()
         task = {
             "text": text,
             "stage": stage,
         }
-        return await self._execute_with_backoff_async(task)
+        result = await self._execute_with_backoff_async(task)
+
+        # Record embedding metrics
+        try:
+            _elapsed = time.monotonic() - _start
+            ctx = get_tenant_context()
+            _base_attrs = {
+                "org_id": ctx.get("org_id", ""),
+                "tenant_id": ctx.get("tenant_id", ""),
+                "model": getattr(self.config, "base_model", "unknown"),
+            }
+            _embedding_duration.record(_elapsed, _base_attrs)
+            _embedding_tokens.add(
+                len(text.split()),
+                _base_attrs,
+            )
+        except Exception:
+            logger.debug(
+                "Failed to record embedding metrics", exc_info=True
+            )
+
+        return result
 
     def get_embedding(
         self,
@@ -131,11 +168,32 @@ class EmbeddingProvider(Provider):
         texts: list[str],
         stage: Step = Step.BASE,
     ):
+        _start = time.monotonic()
         task = {
             "texts": texts,
             "stage": stage,
         }
-        return await self._execute_with_backoff_async(task)
+        result = await self._execute_with_backoff_async(task)
+
+        # Record embedding metrics for batch
+        try:
+            _elapsed = time.monotonic() - _start
+            ctx = get_tenant_context()
+            _base_attrs = {
+                "org_id": ctx.get("org_id", ""),
+                "tenant_id": ctx.get("tenant_id", ""),
+                "model": getattr(self.config, "base_model", "unknown"),
+            }
+            _embedding_duration.record(_elapsed, _base_attrs)
+            _total_words = sum(len(t.split()) for t in texts)
+            _embedding_tokens.add(_total_words, _base_attrs)
+        except Exception:
+            logger.debug(
+                "Failed to record embedding batch metrics",
+                exc_info=True,
+            )
+
+        return result
 
     def get_embeddings(
         self,

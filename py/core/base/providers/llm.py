@@ -16,7 +16,22 @@ from core.base.abstractions import (
 
 from .base import Provider, ProviderConfig
 
+from core.utils.otel_setup import get_meter, get_tenant_context
+
 logger = logging.getLogger()
+
+# ── OTel Metrics (lazy, module-level singletons) ──
+_meter = get_meter("r2r.llm")
+_llm_tokens = _meter.create_counter(
+    "r2r.llm.tokens_total",
+    unit="{token}",
+    description="Total LLM tokens consumed",
+)
+_llm_duration = _meter.create_histogram(
+    "r2r.llm.duration_seconds",
+    unit="s",
+    description="LLM completion request duration",
+)
 
 
 class CompletionConfig(ProviderConfig):
@@ -173,6 +188,7 @@ class CompletionProvider(Provider):
         apply_timeout: bool = False,
         **kwargs,
     ) -> LLMChatCompletion:
+        _start = time.monotonic()
         task = {
             "messages": messages,
             "generation_config": generation_config,
@@ -181,7 +197,36 @@ class CompletionProvider(Provider):
         response = await self._execute_with_backoff_async(
             task=task, apply_timeout=apply_timeout
         )
-        return LLMChatCompletion(**response.dict())
+        completion = LLMChatCompletion(**response.dict())
+
+        # Record LLM metrics
+        try:
+            _elapsed = time.monotonic() - _start
+            ctx = get_tenant_context()
+            _model = generation_config.model or "unknown"
+            _base_attrs = {
+                "org_id": ctx.get("org_id", ""),
+                "tenant_id": ctx.get("tenant_id", ""),
+                "model": _model,
+            }
+            _llm_duration.record(_elapsed, _base_attrs)
+            if completion.usage:
+                if completion.usage.prompt_tokens:
+                    _llm_tokens.add(
+                        completion.usage.prompt_tokens,
+                        {**_base_attrs, "token_type": "prompt"},
+                    )
+                if completion.usage.completion_tokens:
+                    _llm_tokens.add(
+                        completion.usage.completion_tokens,
+                        {**_base_attrs, "token_type": "completion"},
+                    )
+        except Exception:
+            logger.debug(
+                "Failed to record LLM metrics", exc_info=True
+            )
+
+        return completion
 
     async def aget_completion_stream(
         self,
